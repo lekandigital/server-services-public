@@ -83,10 +83,10 @@ The compose file mounts the host model directory into the container:
 
 ```yaml
 volumes:
-  - /home/REDACTED_USER/.ollama/models:/root/.ollama/models
+  - /home/your-user/.ollama/models:/root/.ollama/models
 ```
 
-This means models downloaded on the host or inside the container are shared. Adjust this path if your host stores models elsewhere.
+This means models downloaded on the host or inside the container are shared. Adjust this path to match your host's home directory.
 
 ## Manual Deployment (Without Docker)
 
@@ -105,19 +105,13 @@ Then configure your web server to:
 2. Return `index.html` for all non-file routes (SPA fallback).
 3. Proxy `/api/` requests to your Ollama instance (default `http://localhost:11434/api/`).
 
-## Production Server
-
-The current production deployment is at:
-
-```
-http://REDACTED_SERVER_IP:8081
-```
+## Production Deployment
 
 Running via Docker Compose on an Ubuntu server. To deploy updates:
 
 ```bash
-# SSH into the server
-ssh o@REDACTED_SERVER_IP
+# SSH into your server
+ssh your-user@your-server-ip
 
 # Navigate to the project directory and pull changes
 cd /path/to/ollama-gui

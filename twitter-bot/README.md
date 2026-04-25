@@ -2,6 +2,13 @@
 
 Web dashboard to monitor and control the automated Twitter follow/unfollow bot. Also hosts the Server Portal on :8001.
 
+## Screenshots
+
+### Dashboard Overview
+Real-time bot status, queue summary, follow/unfollow progress bars, and recent activity feed.
+
+![Twitter Bot Dashboard](screenshots/dashboard-main.png)
+
 ## How It Works
 
 - `dashboard.py` — Flask web dashboard showing bot status, queue stats, follow/unfollow progress, and controls

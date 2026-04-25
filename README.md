@@ -21,6 +21,22 @@ All services running on the home server, organized for deployment on any Ubuntu 
 └─────────────────────────────────────────────────────┘
 ```
 
+## Screenshots
+
+### Server Portal — Service Directory
+![Server Portal](screenshots/portal-dashboard.png)
+
+### System Stats — Live Monitoring
+![System Stats](screenshots/system-stats-overview.png)
+
+### Twitter Bot — Automation Dashboard
+![Twitter Bot](screenshots/twitter-bot-dashboard.png)
+
+### Cast Manager — Media & Torrents
+![Cast Manager](screenshots/cast-manager-home.png)
+
+> See each service's README for more screenshots: [Whisper Transcriber](whisper-transcriber/), [OCR Engine](ocr-engine/), [Ollama GUI](ollama-gui/)
+
 ## Quick Deploy
 
 ```bash
@@ -159,16 +175,7 @@ server-services/
     └── README.md
 ```
 
-## Original Source
+## License
 
-Originally deployed on `REDACTED_SERVER_IP` on 2026-04-25.
+MIT — see individual service directories for any upstream license requirements (e.g., Ollama GUI).
 
-| Service | Original Location |
-|---------|-------------------|
-| Server Portal | `/home/REDACTED_USER/xb/portal.py` |
-| Ollama GUI | `/home/REDACTED_USER/ollama-gui/` (fork of [HelgeSverre/ollama-gui](https://github.com/HelgeSverre/ollama-gui)) |
-| Twitter Bot | `/home/REDACTED_USER/xb/` |
-| Cast Manager | `/home/REDACTED_USER/cast_manager_v3/` |
-| Whisper | `/opt/faster-whisper-ui/` |
-| OCR | `/opt/paddleocr-ui/` |
-| System Stats | `/home/REDACTED_USER/system-stats/` |

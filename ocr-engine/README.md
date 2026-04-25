@@ -2,6 +2,18 @@
 
 Web UI for image & PDF text extraction using PaddleOCR. Supports 109 languages with GPU acceleration.
 
+## Screenshots
+
+### Upload & Extract
+Drag-and-drop file upload with GPU status indicator and one-click text extraction.
+
+![OCR Upload](screenshots/ocr-upload.png)
+
+### Extraction History
+Sortable history table showing file type, word count, language, confidence scores, and result actions.
+
+![OCR History](screenshots/ocr-history.png)
+
 ## How It Works
 
 - Flask server with embedded HTML UI in `static/index.html`
