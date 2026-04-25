@@ -2,6 +2,18 @@
 
 Live system monitoring dashboard showing CPU, GPU, RAM, disk usage, and service health. Includes historical data stored in SQLite.
 
+## Screenshots
+
+### Dashboard Overview
+Live metrics cards for uptime, GPU VRAM, RAM, CPU, disk, network, and GPU power — with auto-refresh and service health table.
+
+![System Stats Overview](screenshots/dashboard-overview.png)
+
+### Service Health & Historical Trends
+Per-service status with PID and memory, plus CPU/RAM and GPU VRAM/temperature charts over time.
+
+![Service Health & Trends](screenshots/dashboard-services.png)
+
 ## How It Works
 
 - Flask server with inline HTML/CSS/JS dashboard

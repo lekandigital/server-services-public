@@ -2,6 +2,13 @@
 
 Video file manager with Chromecast casting, Transmission torrent integration, and remote streaming. Built with Node.js/Express + SQLite.
 
+## Screenshots
+
+### Home — Quick Cast & Torrent Status
+File browser with one-click Chromecast casting, torrent integration, and storage overview.
+
+![Cast Manager Home](screenshots/cast-manager-home.png)
+
 ## How It Works
 
 - Express server manages a video library from the downloads directory
@@ -43,20 +50,20 @@ npm install
 ## Environment Variables (.env)
 
 ```
-SSH_HOST=REDACTED_SERVER_IP
-SSH_USER=o
-SSH_PASSWORD=<password>
+SSH_HOST=your-server-ip
+SSH_USER=your-user
+SSH_PASSWORD=<your-password>
 TRANSMISSION_USER=transmission
-TRANSMISSION_PASS=transmission
-DOWNLOAD_DIR=/home/REDACTED_USER/watch_list
-CHROMECAST_NAME=REDACTED_DEVICE
-CATT_PATH=/home/REDACTED_USER/.local/bin/catt
+TRANSMISSION_PASS=<your-password>
+DOWNLOAD_DIR=/home/your-user/watch_list
+CHROMECAST_NAME=Living Room TV
+CATT_PATH=/home/your-user/.local/bin/catt
 PORT=8004
 NODE_ENV=production
 PUBLIC_URL=
 STREAM_TOKEN_EXPIRY_HOURS=24
 TRANSCODE_CACHE_DIR=/tmp/cast_manager_cache
-TRASH_DIR=/home/REDACTED_USER/.cast_manager/trash
+TRASH_DIR=/home/your-user/.cast_manager/trash
 ```
 
 ## Files

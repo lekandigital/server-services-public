@@ -2,6 +2,13 @@
 
 Web UI for audio & video transcription using Faster Whisper (large-v3 model). Upload files, get transcriptions with timestamps. Uses GPU acceleration via CUDA.
 
+## Screenshots
+
+### Transcription Interface
+Drag-and-drop upload with GPU status, advanced model options, and job history with download links.
+
+![Whisper Transcriber UI](screenshots/transcriber-ui.png)
+
 ## How It Works
 
 - Flask server with embedded HTML UI in `static/index.html`

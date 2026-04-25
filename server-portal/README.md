@@ -2,6 +2,13 @@
 
 Single-page Flask dashboard showing all services running on this machine. Provides live status checks via TCP probe and supports toggling services on/off via systemctl.
 
+## Screenshots
+
+### Service Dashboard
+All services at a glance — live status indicators, port badges, and one-click start/stop toggles.
+
+![Portal Dashboard](screenshots/portal-dashboard.png)
+
 ## How It Works
 
 - Reads service definitions from `services.json`
