@@ -1,0 +1,22 @@
+services:
+  ollama:
+    image: ollama/ollama
+    environment:
+      - OLLAMA_ORIGINS=*
+    container_name: ollama
+    ports:
+      - 11435:11434
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    volumes:
+      - /home/REDACTED_USER/.ollama/models:/root/.ollama/models
+  ollama-gui:
+    container_name: ollama_gui
+    build: .
+    ports:
+      - 8081:80

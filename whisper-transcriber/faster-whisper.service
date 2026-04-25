@@ -1,0 +1,17 @@
+[Unit]
+Description=Faster Whisper Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__INSTALL_DIR__/whisper-transcriber
+ExecStart=/usr/bin/python3 __INSTALL_DIR__/whisper-transcriber/server.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# NVIDIA CUDA library paths — adjust if your CUDA install location differs
+Environment=LD_LIBRARY_PATH=/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cublas/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cuda_cupti/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cuda_nvrtc/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cuda_runtime/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cudnn/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cufft/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/curand/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cusolver/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cusparse/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/cusparselt/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/nccl/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/nvjitlink/lib:/home/__USER__/.local/lib/python3.10/site-packages/nvidia/nvtx/lib:/usr/local/cuda/lib64
+
+[Install]
+WantedBy=multi-user.target

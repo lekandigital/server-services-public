@@ -1,0 +1,19 @@
+[Unit]
+Description=Twitter Bot Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__/twitter-bot
+ExecStart=/usr/bin/python3 dashboard.py --port 8003
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xb-dashboard
+
+[Install]
+WantedBy=multi-user.target

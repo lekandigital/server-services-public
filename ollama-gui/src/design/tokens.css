@@ -1,0 +1,173 @@
+:root {
+  /* Spacing base: 4px grid */
+  --spacing-unit: 4px;
+  --sidebar-width: 320px;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+}
+
+/* ========== Theme: Default Light (warm white) — the :root default ========== */
+:root,
+.light,
+.theme-default-light {
+  --color-surface-0: #faf9f7;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #f5f3f0;
+  --color-surface-3: #ebe8e4;
+
+  --color-accent: #2563eb;
+  --color-accent-soft: #3b82f6;
+  --color-accent-muted: #dbeafe;
+
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+
+  --color-text-primary: #1e293b;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+
+  --color-border: #e2e8f0;
+  --color-border-hover: #cbd5e1;
+
+  --color-user-bubble: #2563eb;
+  --color-user-bubble-text: #ffffff;
+
+  --color-scrollbar: #cbd5e1;
+  --color-scrollbar-hover: #94a3b8;
+}
+
+/* ========== Theme: Default Dark (navy/blue) ========== */
+.dark,
+.theme-default-dark {
+  --color-surface-0: #0a0f1a;
+  --color-surface-1: #111827;
+  --color-surface-2: #1a2235;
+  --color-surface-3: #243049;
+
+  --color-accent: #3b82f6;
+  --color-accent-soft: #60a5fa;
+  --color-accent-muted: #1e3a5f;
+
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #475569;
+
+  --color-border: #1e293b;
+  --color-border-hover: #334155;
+
+  --color-user-bubble: #3b82f6;
+  --color-user-bubble-text: #ffffff;
+
+  --color-scrollbar: #334155;
+  --color-scrollbar-hover: #475569;
+}
+
+/* ========== Theme: Hacker (green on black) ========== */
+.theme-hacker {
+  --color-surface-0: #0a0a0a;
+  --color-surface-1: #111111;
+  --color-surface-2: #1a1a1a;
+  --color-surface-3: #222222;
+
+  --color-accent: #00ff41;
+  --color-accent-soft: #33ff66;
+  --color-accent-muted: #003310;
+
+  --color-success: #00ff41;
+  --color-warning: #ffb800;
+  --color-danger: #ff3333;
+
+  --color-text-primary: #00ff41;
+  --color-text-secondary: #00cc33;
+  --color-text-muted: #006622;
+
+  --color-border: #1a3a1a;
+  --color-border-hover: #2a4a2a;
+
+  --color-user-bubble: #003310;
+  --color-user-bubble-text: #00ff41;
+
+  --color-scrollbar: #1a3a1a;
+  --color-scrollbar-hover: #2a4a2a;
+
+  --font-sans: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ========== Theme: Paper (sepia, warm, minimal) ========== */
+.theme-paper {
+  --color-surface-0: #f5f0e8;
+  --color-surface-1: #faf6ef;
+  --color-surface-2: #efe9df;
+  --color-surface-3: #e5ddd0;
+
+  --color-accent: #8b6914;
+  --color-accent-soft: #a67c1a;
+  --color-accent-muted: #f0e6cc;
+
+  --color-success: #4a7c3f;
+  --color-warning: #b8860b;
+  --color-danger: #a94442;
+
+  --color-text-primary: #3c3226;
+  --color-text-secondary: #6b5e4f;
+  --color-text-muted: #9a8d7e;
+
+  --color-border: #d9d0c3;
+  --color-border-hover: #c9bfb0;
+
+  --color-user-bubble: #8b6914;
+  --color-user-bubble-text: #faf6ef;
+
+  --color-scrollbar: #c9bfb0;
+  --color-scrollbar-hover: #b0a595;
+
+  --font-sans: 'Georgia', 'Times New Roman', serif;
+}
+
+/* ========== Theme: High Contrast (accessibility) ========== */
+.theme-high-contrast {
+  --color-surface-0: #000000;
+  --color-surface-1: #0a0a0a;
+  --color-surface-2: #1a1a1a;
+  --color-surface-3: #2a2a2a;
+
+  --color-accent: #ffff00;
+  --color-accent-soft: #ffff66;
+  --color-accent-muted: #333300;
+
+  --color-success: #00ff00;
+  --color-warning: #ffff00;
+  --color-danger: #ff0000;
+
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #e0e0e0;
+  --color-text-muted: #a0a0a0;
+
+  --color-border: #ffffff;
+  --color-border-hover: #ffff00;
+
+  --color-user-bubble: #ffff00;
+  --color-user-bubble-text: #000000;
+
+  --color-scrollbar: #666666;
+  --color-scrollbar-hover: #999999;
+}
