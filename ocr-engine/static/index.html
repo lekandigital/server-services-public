@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCR Engine — PaddleOCR</title>
+<meta name="description" content="GPU-accelerated OCR engine supporting 109 languages. Extract text from images and PDFs instantly.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--bg2:#141620;--card:#1a1d27;--card2:#1e2230;
+  --border:#2a2d3a;--border2:#353849;
+  --text:#e4e4e7;--text2:#a1a1aa;--text3:#71717a;
+  --accent:#7c3aed;--accent2:#6d28d9;--accent-glow:rgba(124,58,237,.25);
+  --green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;
+  --radius:12px;--radius-sm:8px;
+  --font:'Inter',system-ui,-apple-system,sans-serif;
+  --mono:'JetBrains Mono','Fira Code',monospace;
+  --shadow:0 4px 24px rgba(0,0,0,.4);
+  --transition:all .2s ease;
+}
+html{font-size:15px;scroll-behavior:smooth}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6}
+a{color:var(--accent);text-decoration:none}
+
+/* Layout */
+.container{max-width:960px;margin:0 auto;padding:24px 20px}
+
+/* Header */
+.header{text-align:center;padding:48px 0 32px;position:relative}
+.header::after{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:120px;height:2px;background:linear-gradient(90deg,transparent,var(--accent),transparent);border-radius:1px}
+.header h1{font-size:2rem;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
+.header h1 span{display:inline-block;margin-right:8px}
+.header .subtitle{color:var(--text2);font-size:.875rem;font-weight:400;letter-spacing:.02em}
+.gpu-badge{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:5px 14px;background:var(--card);border:1px solid var(--border);border-radius:20px;font-size:.75rem;font-weight:500;color:var(--text2);transition:var(--transition)}
+.gpu-badge .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.gpu-badge.online .dot{background:var(--green);box-shadow:0 0 8px rgba(34,197,94,.5)}
+.gpu-badge.offline .dot{background:var(--red);box-shadow:0 0 8px rgba(239,68,68,.5)}
+.gpu-badge.downloading .dot{background:var(--orange);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Upload Zone */
+.upload-zone{margin-top:32px;border:2px dashed var(--border);border-radius:var(--radius);padding:48px 24px;text-align:center;cursor:pointer;transition:var(--transition);position:relative;background:var(--card)}
+.upload-zone:hover,.upload-zone.dragover{border-color:var(--accent);background:rgba(124,58,237,.05)}
+.upload-zone.has-file{border-style:solid;border-color:var(--border2)}
+.upload-icon{font-size:2.5rem;margin-bottom:12px;opacity:.7}
+.upload-text{color:var(--text2);font-size:.875rem}
+.upload-text strong{color:var(--text);font-weight:500}
+.upload-hint{color:var(--text3);font-size:.75rem;margin-top:6px}
+
+/* File Preview */
+.file-preview{display:none;align-items:center;gap:16px;padding:16px;background:var(--bg2);border-radius:var(--radius-sm);text-align:left}
+.file-preview.visible{display:flex}
+.file-thumb{width:64px;height:64px;border-radius:var(--radius-sm);object-fit:cover;background:var(--card2);border:1px solid var(--border)}
+.file-thumb.pdf-icon{display:flex;align-items:center;justify-content:center;font-size:1.5rem;color:var(--red)}
+.file-info{flex:1;min-width:0}
+.file-name{font-weight:500;font-size:.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.file-meta{color:var(--text3);font-size:.75rem;margin-top:2px}
+.file-remove{background:none;border:none;color:var(--text3);cursor:pointer;font-size:1.2rem;padding:4px 8px;transition:var(--transition)}
+.file-remove:hover{color:var(--red)}
+
+/* Buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 24px;border:none;border-radius:var(--radius-sm);font-family:var(--font);font-size:.875rem;font-weight:600;cursor:pointer;transition:var(--transition);letter-spacing:.01em}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--accent);color:#fff;box-shadow:0 2px 12px var(--accent-glow)}
+.btn-primary:hover:not(:disabled){background:var(--accent2);box-shadow:0 4px 20px var(--accent-glow)}
+.btn-secondary{background:var(--card);color:var(--text);border:1px solid var(--border)}
+.btn-secondary:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn-sm{padding:6px 14px;font-size:.8rem}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap}
+.extract-btn{margin-top:20px;width:100%;padding:14px;font-size:.95rem}
+
+/* Options Panel */
+.options-toggle{display:flex;align-items:center;gap:8px;margin-top:24px;padding:12px 16px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:.85rem;font-weight:500;color:var(--text2);transition:var(--transition);width:100%;text-align:left}
+.options-toggle:hover{border-color:var(--accent);color:var(--text)}
+.options-toggle .arrow{transition:transform .2s;font-size:.7rem}
+.options-toggle .arrow.open{transform:rotate(180deg)}
+.options-panel{display:none;margin-top:8px;padding:20px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);gap:16px}
+.options-panel.visible{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.opt-group{display:flex;flex-direction:column;gap:4px}
+.opt-group.full-width{grid-column:1/-1}
+.opt-label{font-size:.75rem;font-weight:500;color:var(--text2);text-transform:uppercase;letter-spacing:.05em}
+.opt-select,.opt-input{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-family:var(--font);font-size:.85rem;transition:var(--transition)}
+.opt-select:focus,.opt-input:focus{outline:none;border-color:var(--accent)}
+.opt-select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2371717a' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+
+/* Toggle Switch */
+.toggle-wrap{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
+.toggle{position:relative;width:40px;height:22px;cursor:pointer;flex-shrink:0}
+.toggle input{display:none}
+.toggle .slider{position:absolute;inset:0;background:var(--border2);border-radius:11px;transition:var(--transition)}
+.toggle .slider::before{content:'';position:absolute;bottom:3px;left:3px;width:16px;height:16px;background:#fff;border-radius:50%;transition:var(--transition)}
+.toggle input:checked+.slider{background:var(--accent)}
+.toggle input:checked+.slider::before{transform:translateX(18px)}
+
+/* Slider */
+.range-wrap{display:flex;align-items:center;gap:12px}
+.range-wrap input[type="range"]{flex:1;-webkit-appearance:none;height:4px;background:var(--border);border-radius:2px;outline:none}
+.range-wrap input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:var(--accent);border-radius:50%;cursor:pointer}
+.range-val{font-size:.8rem;font-family:var(--mono);color:var(--text2);min-width:28px;text-align:right}
+
+/* Progress Section */
+.progress-section{display:none;margin-top:32px;padding:24px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)}
+.progress-section.visible{display:block}
+.progress-bar-bg{height:6px;background:var(--bg2);border-radius:3px;overflow:hidden;margin-bottom:12px}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),#a855f7);border-radius:3px;transition:width .3s ease;width:0}
+.progress-info{display:flex;justify-content:space-between;align-items:center}
+.progress-msg{font-size:.85rem;color:var(--text2)}
+.progress-time{font-size:.8rem;font-family:var(--mono);color:var(--text3)}
+
+/* Results */
+.results-section{display:none;margin-top:32px}
+.results-section.visible{display:block}
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;text-align:center}
+.stat-value{font-size:1.3rem;font-weight:700;color:var(--text);font-family:var(--mono)}
+.stat-label{font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px}
+
+/* Tabs */
+.tabs{display:flex;gap:0;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px}
+.tab{flex:1;padding:10px;text-align:center;font-size:.85rem;font-weight:500;color:var(--text2);cursor:pointer;transition:var(--transition);border:none;background:none}
+.tab.active{background:var(--accent);color:#fff}
+.tab:hover:not(.active){color:var(--text)}
+
+/* Text View */
+.text-view{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);max-height:500px;overflow:auto;position:relative}
+.text-view pre{font-family:var(--mono);font-size:.82rem;line-height:1.8;padding:16px 16px 16px 60px;white-space:pre-wrap;word-break:break-word;color:var(--text)}
+.line-numbers{position:absolute;left:0;top:0;bottom:0;width:44px;background:var(--card);border-right:1px solid var(--border);padding:16px 8px;text-align:right;font-family:var(--mono);font-size:.82rem;line-height:1.8;color:var(--text3);user-select:none;overflow:hidden}
+
+/* Visual View */
+.visual-view{display:none;position:relative;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:auto;max-height:600px}
+.visual-view canvas{display:block;max-width:100%}
+
+/* Page Nav */
+.page-nav{display:none;align-items:center;justify-content:center;gap:16px;margin:16px 0}
+.page-nav.visible{display:flex}
+.page-nav .btn{padding:6px 12px}
+.page-nav span{font-size:.85rem;color:var(--text2);font-family:var(--mono)}
+
+/* Action Buttons */
+.result-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center}
+.result-actions .spacer{flex:1}
+
+/* History */
+.history-section{margin-top:48px;padding-top:32px;border-top:1px solid var(--border)}
+.section-title{font-size:1.1rem;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.section-title .count{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:2px 10px;font-size:.75rem;color:var(--text3);font-weight:500}
+.history-table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius-sm)}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{background:var(--card);color:var(--text2);font-weight:500;text-transform:uppercase;letter-spacing:.04em;font-size:.7rem;padding:12px 14px;text-align:left;cursor:pointer;user-select:none;white-space:nowrap;position:sticky;top:0}
+th:hover{color:var(--text)}
+th .sort-arrow{margin-left:4px;opacity:.3;font-size:.6rem}
+th.sorted .sort-arrow{opacity:1;color:var(--accent)}
+td{padding:10px 14px;border-top:1px solid var(--border);color:var(--text2);white-space:nowrap}
+tr:hover td{background:rgba(124,58,237,.03)}
+.type-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:500;text-transform:uppercase}
+.type-badge.image{background:rgba(59,130,246,.15);color:var(--blue)}
+.type-badge.pdf{background:rgba(239,68,68,.15);color:var(--red)}
+.confidence-bar{display:inline-block;width:48px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;vertical-align:middle;margin-right:6px}
+.confidence-bar span{display:block;height:100%;border-radius:2px}
+.actions-cell{display:flex;gap:4px}
+.actions-cell button{background:none;border:none;color:var(--text3);cursor:pointer;padding:4px 6px;font-size:.85rem;border-radius:4px;transition:var(--transition)}
+.actions-cell button:hover{color:var(--accent);background:var(--accent-glow)}
+.actions-cell button.delete:hover{color:var(--red);background:rgba(239,68,68,.1)}
+.pagination{display:flex;justify-content:center;align-items:center;gap:12px;margin-top:12px;padding:8px}
+.pagination button{background:var(--card);border:1px solid var(--border);color:var(--text2);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:.8rem;transition:var(--transition)}
+.pagination button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.pagination button:disabled{opacity:.3;cursor:not-allowed}
+.pagination span{font-size:.8rem;color:var(--text3);font-family:var(--mono)}
+
+/* Empty state */
+.empty-state{text-align:center;padding:40px;color:var(--text3);font-size:.85rem}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;right:24px;background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 20px;font-size:.85rem;color:var(--text);box-shadow:var(--shadow);z-index:1000;transform:translateY(100px);opacity:0;transition:all .3s ease;pointer-events:none}
+.toast.visible{transform:translateY(0);opacity:1}
+.toast.success{border-color:var(--green)}
+.toast.error{border-color:var(--red)}
+
+/* Scroll */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--border2)}
+
+/* Responsive */
+@media(max-width:640px){
+  .container{padding:16px 12px}
+  .header{padding:32px 0 24px}
+  .header h1{font-size:1.5rem}
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .options-panel.visible{grid-template-columns:1fr}
+  .upload-zone{padding:32px 16px}
+  table{font-size:.75rem}
+  th,td{padding:8px 10px}
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- Header -->
+  <header class="header">
+    <h1><span>🔍</span> OCR Engine</h1>
+    <p class="subtitle">PaddleOCR · GPU Accelerated · 109 Languages</p>
+    <div class="gpu-badge" id="gpuBadge">
+      <span class="dot"></span>
+      <span id="gpuText">Checking...</span>
+    </div>
+  </header>
+
+  <!-- Upload Zone -->
+  <div class="upload-zone" id="uploadZone">
+    <div id="uploadPrompt">
+      <div class="upload-icon">📄</div>
+      <p class="upload-text"><strong>Drop file here</strong> or click to browse</p>
+      <p class="upload-hint">PNG, JPG, WebP, BMP, TIFF, GIF, or PDF · Max 100 MB</p>
+    </div>
+    <div class="file-preview" id="filePreview">
+      <img class="file-thumb" id="fileThumb" alt="">
+      <div class="file-info">
+        <div class="file-name" id="fileName"></div>
+        <div class="file-meta" id="fileMeta"></div>
+      </div>
+      <button class="file-remove" id="fileRemove" title="Remove">✕</button>
+    </div>
+    <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif,.pdf" style="display:none">
+  </div>
+
+  <button class="btn btn-primary extract-btn" id="extractBtn" disabled>Extract Text</button>
+
+  <!-- Options -->
+  <button class="options-toggle" id="optionsToggle">
+    <span>⚙️ Options</span>
+    <span style="flex:1"></span>
+    <span class="arrow" id="optArrow">▼</span>
+  </button>
+  <div class="options-panel" id="optionsPanel">
+    <div class="opt-group">
+      <label class="opt-label">Language</label>
+      <select class="opt-select" id="optLang">
+        <option value="en" selected>English</option>
+      </select>
+    </div>
+    <div class="opt-group">
+      <label class="opt-label">Output Format</label>
+      <select class="opt-select" id="optFormat">
+        <option value="txt">Plain Text</option>
+        <option value="json">JSON with Boxes</option>
+        <option value="csv">CSV</option>
+        <option value="searchable_pdf">Searchable PDF</option>
+      </select>
+    </div>
+    <div class="opt-group">
+      <label class="opt-label">Auto-Rotate</label>
+      <div class="toggle-wrap">
+        <span style="font-size:.82rem;color:var(--text2)">Correct skewed text</span>
+        <label class="toggle"><input type="checkbox" id="optAngle" checked><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="opt-group">
+      <label class="opt-label">Preserve Layout</label>
+      <div class="toggle-wrap">
+        <span style="font-size:.82rem;color:var(--text2)">Maintain spatial positions</span>
+        <label class="toggle"><input type="checkbox" id="optLayout" checked><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="opt-group full-width">
+      <label class="opt-label">Detection Threshold: <span id="threshVal">0.3</span></label>
+      <div class="range-wrap">
+        <span class="range-val">0.1</span>
+        <input type="range" id="optThresh" min="0.1" max="0.9" step="0.05" value="0.3">
+        <span class="range-val">0.9</span>
+      </div>
+    </div>
+    <div class="opt-group" id="pageRangeGroup" style="display:none">
+      <label class="opt-label">Page Range</label>
+      <input type="text" class="opt-input" id="optPages" placeholder="e.g. 1-3,5 (default: all)">
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-section" id="progressSection">
+    <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
+    <div class="progress-info">
+      <span class="progress-msg" id="progressMsg">Starting...</span>
+      <span class="progress-time" id="progressTime">0.0s</span>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="results-section" id="resultsSection">
+    <div class="stats-row" id="statsRow">
+      <div class="stat-card"><div class="stat-value" id="statPages">-</div><div class="stat-label">Pages</div></div>
+      <div class="stat-card"><div class="stat-value" id="statWords">-</div><div class="stat-label">Words</div></div>
+      <div class="stat-card"><div class="stat-value" id="statConf">-</div><div class="stat-label">Avg Confidence</div></div>
+      <div class="stat-card"><div class="stat-value" id="statTime">-</div><div class="stat-label">Time</div></div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" data-tab="text" id="tabText">📝 Text View</button>
+      <button class="tab" data-tab="visual" id="tabVisual">🖼️ Visual View</button>
+    </div>
+
+    <div class="text-view" id="textView">
+      <div class="line-numbers" id="lineNumbers"></div>
+      <pre id="textContent"></pre>
+    </div>
+    <div class="visual-view" id="visualView">
+      <canvas id="visualCanvas"></canvas>
+    </div>
+
+    <div class="page-nav" id="pageNav">
+      <button class="btn btn-secondary btn-sm" id="prevPage">← Prev</button>
+      <span id="pageInfo">Page 1/1</span>
+      <button class="btn btn-secondary btn-sm" id="nextPage">Next →</button>
+    </div>
+
+    <div class="result-actions">
+      <div class="btn-group">
+        <button class="btn btn-secondary btn-sm" onclick="copyText()">📋 Copy</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadResult('txt')">TXT</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadResult('json')">JSON</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadResult('csv')">CSV</button>
+      </div>
+      <span class="spacer"></span>
+      <button class="btn btn-primary btn-sm" onclick="resetUI()">New Extraction</button>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="history-section" id="historySection">
+    <div class="section-title">📚 History <span class="count" id="historyCount">0</span></div>
+    <div class="history-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="filename">File <span class="sort-arrow">▼</span></th>
+            <th data-sort="filetype">Type <span class="sort-arrow">▼</span></th>
+            <th data-sort="total_pages">Pages <span class="sort-arrow">▼</span></th>
+            <th data-sort="words_found">Words <span class="sort-arrow">▼</span></th>
+            <th data-sort="lang">Lang <span class="sort-arrow">▼</span></th>
+            <th data-sort="created_at">Date <span class="sort-arrow">▼</span></th>
+            <th data-sort="avg_confidence">Conf <span class="sort-arrow">▼</span></th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination" style="display:none">
+      <button id="prevHistPage" onclick="changeHistoryPage(-1)">← Prev</button>
+      <span id="histPageInfo">1 / 1</span>
+      <button id="nextHistPage" onclick="changeHistoryPage(1)">Next →</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// --- State ---
+let currentFile = null;
+let currentJobId = null;
+let currentResult = null;
+let pollTimer = null;
+let elapsedTimer = null;
+let elapsedSeconds = 0;
+let historyPage = 1;
+let historySort = 'created_at';
+let historySortOrder = 'desc';
+let currentVisualPage = 1;
+let totalVisualPages = 1;
+
+// --- Elements ---
+const $ = id => document.getElementById(id);
+const uploadZone = $('uploadZone');
+const fileInput = $('fileInput');
+const filePreview = $('filePreview');
+const fileThumb = $('fileThumb');
+const fileName = $('fileName');
+const fileMeta = $('fileMeta');
+const extractBtn = $('extractBtn');
+const progressSection = $('progressSection');
+const progressBar = $('progressBar');
+const progressMsg = $('progressMsg');
+const progressTime = $('progressTime');
+const resultsSection = $('resultsSection');
+const pageRangeGroup = $('pageRangeGroup');
+const optThresh = $('optThresh');
+
+// --- Init ---
+document.addEventListener('DOMContentLoaded', () => {
+  checkHealth();
+  loadHistory();
+  setupUpload();
+  setupOptions();
+  setupTabs();
+  setupPageNav();
+  setupHistorySort();
+});
+
+// --- Health Check ---
+async function checkHealth() {
+  const badge = $('gpuBadge');
+  const text = $('gpuText');
+  try {
+    const res = await fetch('/health');
+    const data = await res.json();
+    if (data.gpu) {
+      badge.className = 'gpu-badge online';
+      text.textContent = 'GPU Ready';
+    } else {
+      badge.className = 'gpu-badge offline';
+      text.textContent = 'CPU Mode';
+    }
+    if (data.models_downloading) {
+      badge.className = 'gpu-badge downloading';
+      text.textContent = 'Downloading Models...';
+    }
+    // Populate languages
+    if (data.supported_langs) {
+      const sel = $('optLang');
+      sel.innerHTML = '';
+      Object.entries(data.supported_langs).forEach(([code, name]) => {
+        const opt = document.createElement('option');
+        opt.value = code;
+        opt.textContent = `${name} (${code})`;
+        if (code === 'en') opt.selected = true;
+        sel.appendChild(opt);
+      });
+    }
+  } catch {
+    badge.className = 'gpu-badge offline';
+    text.textContent = 'Offline';
+  }
+}
+
+// --- Upload ---
+function setupUpload() {
+  uploadZone.addEventListener('click', e => {
+    if (e.target.closest('.file-remove')) return;
+    fileInput.click();
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleFile(fileInput.files[0]);
+  });
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  $('fileRemove').addEventListener('click', e => {
+    e.stopPropagation();
+    clearFile();
+  });
+  extractBtn.addEventListener('click', startExtraction);
+}
+
+function handleFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const allowed = ['png','jpg','jpeg','webp','bmp','tiff','gif','pdf'];
+  if (!allowed.includes(ext)) {
+    showToast('Unsupported file format', 'error');
+    return;
+  }
+  currentFile = file;
+  fileName.textContent = file.name;
+  const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+  fileMeta.textContent = `${sizeMB} MB · ${ext.toUpperCase()}`;
+
+  if (ext === 'pdf') {
+    fileThumb.style.display = 'none';
+    const pdfIcon = document.createElement('div');
+    pdfIcon.className = 'file-thumb pdf-icon';
+    pdfIcon.textContent = '📕';
+    pdfIcon.id = 'pdfIconEl';
+    const existing = document.getElementById('pdfIconEl');
+    if (existing) existing.remove();
+    filePreview.insertBefore(pdfIcon, filePreview.firstChild);
+    pageRangeGroup.style.display = '';
+  } else {
+    const existing = document.getElementById('pdfIconEl');
+    if (existing) existing.remove();
+    fileThumb.style.display = '';
+    const reader = new FileReader();
+    reader.onload = e => fileThumb.src = e.target.result;
+    reader.readAsDataURL(file);
+    pageRangeGroup.style.display = 'none';
+  }
+
+  $('uploadPrompt').style.display = 'none';
+  filePreview.classList.add('visible');
+  uploadZone.classList.add('has-file');
+  extractBtn.disabled = false;
+}
+
+function clearFile() {
+  currentFile = null;
+  fileInput.value = '';
+  $('uploadPrompt').style.display = '';
+  filePreview.classList.remove('visible');
+  uploadZone.classList.remove('has-file');
+  extractBtn.disabled = true;
+  pageRangeGroup.style.display = 'none';
+  const existing = document.getElementById('pdfIconEl');
+  if (existing) existing.remove();
+  fileThumb.style.display = '';
+}
+
+// --- Options ---
+function setupOptions() {
+  $('optionsToggle').addEventListener('click', () => {
+    const panel = $('optionsPanel');
+    const arrow = $('optArrow');
+    panel.classList.toggle('visible');
+    arrow.classList.toggle('open');
+  });
+  optThresh.addEventListener('input', () => {
+    $('threshVal').textContent = optThresh.value;
+  });
+}
+
+// --- Extraction ---
+async function startExtraction() {
+  if (!currentFile) return;
+  extractBtn.disabled = true;
+  progressSection.classList.add('visible');
+  resultsSection.classList.remove('visible');
+  progressBar.style.width = '0%';
+  progressMsg.textContent = 'Uploading file...';
+  elapsedSeconds = 0;
+  progressTime.textContent = '0.0s';
+
+  elapsedTimer = setInterval(() => {
+    elapsedSeconds += 0.1;
+    progressTime.textContent = elapsedSeconds.toFixed(1) + 's';
+  }, 100);
+
+  const formData = new FormData();
+  formData.append('file', currentFile);
+  formData.append('lang', $('optLang').value);
+  formData.append('output_format', $('optFormat').value);
+  formData.append('preserve_layout', $('optLayout').checked);
+  formData.append('use_angle_cls', $('optAngle').checked);
+  formData.append('det_db_thresh', optThresh.value);
+  const pages = $('optPages').value;
+  if (pages) formData.append('page_range', pages);
+
+  try {
+    const res = await fetch('/ocr', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    currentJobId = data.job_id;
+    progressMsg.textContent = 'Processing...';
+    pollStatus();
+  } catch (e) {
+    clearInterval(elapsedTimer);
+    progressMsg.textContent = 'Error: ' + e.message;
+    progressBar.style.width = '0%';
+    showToast(e.message, 'error');
+    extractBtn.disabled = false;
+  }
+}
+
+async function pollStatus() {
+  if (!currentJobId) return;
+  try {
+    const res = await fetch(`/status/${currentJobId}`);
+    const data = await res.json();
+    progressBar.style.width = (data.progress * 100).toFixed(1) + '%';
+    progressMsg.textContent = data.progress_msg || 'Processing...';
+
+    if (data.status === 'completed') {
+      clearInterval(elapsedTimer);
+      progressMsg.textContent = 'Complete!';
+      progressBar.style.width = '100%';
+      await loadResult(currentJobId);
+      loadHistory();
+      return;
+    }
+    if (data.status === 'error') {
+      clearInterval(elapsedTimer);
+      progressMsg.textContent = data.progress_msg || 'Error occurred';
+      showToast('OCR failed: ' + (data.progress_msg || 'Unknown error'), 'error');
+      extractBtn.disabled = false;
+      return;
+    }
+    pollTimer = setTimeout(pollStatus, 2000);
+  } catch {
+    pollTimer = setTimeout(pollStatus, 3000);
+  }
+}
+
+async function loadResult(jobId) {
+  try {
+    const res = await fetch(`/result/${jobId}`);
+    const data = await res.json();
+    currentResult = data;
+
+    $('statPages').textContent = data.total_pages;
+    $('statWords').textContent = data.words_found.toLocaleString();
+    $('statConf').textContent = data.avg_confidence.toFixed(1) + '%';
+    $('statTime').textContent = data.elapsed.toFixed(1) + 's';
+
+    totalVisualPages = data.total_pages;
+    currentVisualPage = 1;
+    renderTextView(data.text);
+    renderVisualView(data.boxes);
+    updatePageNav();
+
+    resultsSection.classList.add('visible');
+  } catch (e) {
+    showToast('Failed to load result', 'error');
+  }
+}
+
+// --- Text View ---
+function renderTextView(text) {
+  const pre = $('textContent');
+  const nums = $('lineNumbers');
+  pre.textContent = text || '(No text detected)';
+  const lines = (text || '').split('\n');
+  nums.textContent = lines.map((_, i) => i + 1).join('\n');
+}
+
+// --- Visual View ---
+function renderVisualView(boxes) {
+  if (!boxes || !boxes.length) return;
+  const canvas = $('visualCanvas');
+  const ctx = canvas.getContext('2d');
+
+  // Filter boxes for current page
+  const pageBoxes = boxes.filter(b => b.page === currentVisualPage);
+  if (!pageBoxes.length) {
+    canvas.width = 400;
+    canvas.height = 100;
+    ctx.fillStyle = '#1a1d27';
+    ctx.fillRect(0, 0, 400, 100);
+    ctx.fillStyle = '#71717a';
+    ctx.font = '14px Inter';
+    ctx.fillText('No detections on this page', 120, 55);
+    return;
+  }
+
+  // Calculate canvas size from box extents
+  let maxX = 0, maxY = 0;
+  pageBoxes.forEach(b => {
+    b.box.forEach(p => {
+      maxX = Math.max(maxX, p[0]);
+      maxY = Math.max(maxY, p[1]);
+    });
+  });
+  canvas.width = Math.min(maxX + 40, 1200);
+  canvas.height = maxY + 40;
+
+  ctx.fillStyle = '#141620';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw boxes
+  const colors = ['#7c3aed','#3b82f6','#22c55e','#f59e0b','#ef4444','#ec4899','#06b6d4'];
+  pageBoxes.forEach((b, i) => {
+    const color = colors[i % colors.length];
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.7;
+    ctx.beginPath();
+    ctx.moveTo(b.box[0][0], b.box[0][1]);
+    for (let j = 1; j < b.box.length; j++) ctx.lineTo(b.box[j][0], b.box[j][1]);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Fill background
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = color;
+    ctx.fill();
+
+    // Text label
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = color;
+    ctx.font = '11px "JetBrains Mono", monospace';
+    const label = b.text.substring(0, 40) + (b.text.length > 40 ? '…' : '');
+    ctx.fillText(label, b.box[0][0], b.box[0][1] - 4);
+
+    // Confidence label
+    ctx.fillStyle = '#71717a';
+    ctx.font = '9px "JetBrains Mono", monospace';
+    ctx.fillText((b.confidence * 100).toFixed(0) + '%', b.box[1][0] + 4, b.box[1][1] - 4);
+  });
+  ctx.globalAlpha = 1;
+}
+
+// --- Tabs ---
+function setupTabs() {
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const target = tab.dataset.tab;
+      $('textView').style.display = target === 'text' ? '' : 'none';
+      $('visualView').style.display = target === 'visual' ? '' : 'none';
+    });
+  });
+}
+
+// --- Page Navigation ---
+function setupPageNav() {
+  $('prevPage').addEventListener('click', () => {
+    if (currentVisualPage > 1) {
+      currentVisualPage--;
+      updatePageNav();
+      if (currentResult) renderVisualView(currentResult.boxes);
+    }
+  });
+  $('nextPage').addEventListener('click', () => {
+    if (currentVisualPage < totalVisualPages) {
+      currentVisualPage++;
+      updatePageNav();
+      if (currentResult) renderVisualView(currentResult.boxes);
+    }
+  });
+}
+
+function updatePageNav() {
+  const nav = $('pageNav');
+  if (totalVisualPages > 1) {
+    nav.classList.add('visible');
+    $('pageInfo').textContent = `Page ${currentVisualPage} / ${totalVisualPages}`;
+    $('prevPage').disabled = currentVisualPage <= 1;
+    $('nextPage').disabled = currentVisualPage >= totalVisualPages;
+  } else {
+    nav.classList.remove('visible');
+  }
+}
+
+// --- Actions ---
+function copyText() {
+  if (!currentResult) return;
+  navigator.clipboard.writeText(currentResult.text || '').then(() => showToast('Copied to clipboard', 'success'));
+}
+
+function downloadResult(fmt) {
+  if (!currentJobId) return;
+  window.open(`/download/${currentJobId}/${fmt}`, '_blank');
+}
+
+function resetUI() {
+  clearFile();
+  progressSection.classList.remove('visible');
+  resultsSection.classList.remove('visible');
+  currentJobId = null;
+  currentResult = null;
+  if (pollTimer) clearTimeout(pollTimer);
+  if (elapsedTimer) clearInterval(elapsedTimer);
+  extractBtn.disabled = true;
+}
+
+// --- History ---
+async function loadHistory() {
+  try {
+    const res = await fetch(`/history?page=${historyPage}&per_page=10&sort=${historySort}&order=${historySortOrder}`);
+    const data = await res.json();
+    $('historyCount').textContent = data.total;
+    const tbody = $('historyBody');
+
+    if (data.total === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No OCR jobs yet. Upload a file to get started.</td></tr>';
+      $('pagination').style.display = 'none';
+      return;
+    }
+
+    tbody.innerHTML = data.jobs.map(j => {
+      const confColor = j.avg_confidence >= 90 ? 'var(--green)' : j.avg_confidence >= 70 ? 'var(--orange)' : 'var(--red)';
+      const dateStr = j.created_at ? new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
+      const displayName = j.display_name || j.filename;
+      const shortName = displayName.length > 25 ? displayName.substring(0, 22) + '…' : displayName;
+      return `<tr>
+        <td title="${displayName}">${shortName}</td>
+        <td><span class="type-badge ${j.filetype}">${j.filetype}</span></td>
+        <td>${j.total_pages || '-'}</td>
+        <td>${j.words_found ? j.words_found.toLocaleString() : '-'}</td>
+        <td>${j.lang || '-'}</td>
+        <td>${dateStr}</td>
+        <td><span class="confidence-bar"><span style="width:${j.avg_confidence}%;background:${confColor}"></span></span>${j.avg_confidence ? j.avg_confidence.toFixed(0) + '%' : '-'}</td>
+        <td class="actions-cell">
+          ${j.status === 'completed' ? `<button onclick="viewHistoryResult('${j.id}')" title="View">👁</button>
+          <button onclick="downloadResult('txt');currentJobId='${j.id}'" title="Download">📥</button>` : ''}
+          <button class="delete" onclick="deleteJob('${j.id}')" title="Delete">🗑</button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    if (data.total_pages > 1) {
+      $('pagination').style.display = 'flex';
+      $('histPageInfo').textContent = `${data.page} / ${data.total_pages}`;
+      $('prevHistPage').disabled = data.page <= 1;
+      $('nextHistPage').disabled = data.page >= data.total_pages;
+    } else {
+      $('pagination').style.display = 'none';
+    }
+  } catch {
+    $('historyBody').innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load history</td></tr>';
+  }
+}
+
+function changeHistoryPage(delta) {
+  historyPage += delta;
+  if (historyPage < 1) historyPage = 1;
+  loadHistory();
+}
+
+function setupHistorySort() {
+  document.querySelectorAll('th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const field = th.dataset.sort;
+      if (historySort === field) {
+        historySortOrder = historySortOrder === 'desc' ? 'asc' : 'desc';
+      } else {
+        historySort = field;
+        historySortOrder = 'desc';
+      }
+      document.querySelectorAll('th').forEach(t => t.classList.remove('sorted'));
+      th.classList.add('sorted');
+      historyPage = 1;
+      loadHistory();
+    });
+  });
+}
+
+async function viewHistoryResult(jobId) {
+  currentJobId = jobId;
+  await loadResult(jobId);
+  resultsSection.scrollIntoView({ behavior: 'smooth' });
+}
+
+async function deleteJob(jobId) {
+  if (!confirm('Delete this job?')) return;
+  try {
+    await fetch(`/delete/${jobId}`, { method: 'DELETE' });
+    showToast('Job deleted', 'success');
+    loadHistory();
+  } catch {
+    showToast('Delete failed', 'error');
+  }
+}
+
+// --- Toast ---
+function showToast(msg, type = '') {
+  const toast = $('toast');
+  toast.textContent = msg;
+  toast.className = 'toast visible ' + type;
+  setTimeout(() => toast.classList.remove('visible'), 3000);
+}
+</script>
+</body>
+</html>

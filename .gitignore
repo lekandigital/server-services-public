@@ -1,0 +1,38 @@
+# Databases (auto-created at runtime)
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime data
+*.log
+*.pid
+__pycache__/
+*.pyc
+uploads/
+results/
+
+# Node
+node_modules/
+
+# Environment (contains secrets)
+.env
+.secrets-filter.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Twitter bot runtime data
+queue.json
+followed.csv
+unfollowed.csv
+history.jsonl
+daily_counts.json
+cacheforlogin.json
+input.csv
+data.lock
+debug/
+importcsv/
+
+# Public mirror workflow
+/tmp-public-mirror/

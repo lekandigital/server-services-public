@@ -1,0 +1,23 @@
+[Unit]
+Description=Cast Manager v3 - Torrent & Chromecast Management
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__/cast-manager
+Environment=NODE_ENV=production
+Environment=PORT=8004
+Environment=PATH=/home/__USER__/.nvm/versions/node/v20.20.0/bin:/home/__USER__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/bin/mkdir -p /tmp/cast_uploads
+ExecStart=/home/__USER__/.nvm/versions/node/v20.20.0/bin/node server.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cast-manager
+
+[Install]
+WantedBy=multi-user.target

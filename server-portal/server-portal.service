@@ -1,0 +1,19 @@
+[Unit]
+Description=Server Portal - Service Directory
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__/server-portal
+ExecStart=/usr/bin/python3 portal.py --port 8001
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=server-portal
+
+[Install]
+WantedBy=multi-user.target

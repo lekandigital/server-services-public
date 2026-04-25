@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cast Manager</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <!-- App Shell -->
+  <div id="app">
+    <!-- Sidebar Navigation -->
+    <nav id="sidebar">
+      <div class="sidebar-logo">Cast Manager</div>
+      <div class="nav-items">
+        <button class="nav-item active" data-section="home" onclick="showSection('home')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
+          <span>Home</span>
+        </button>
+        <button class="nav-item" data-section="library" onclick="showSection('library')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+          <span>My Files</span>
+        </button>
+        <button class="nav-item" data-section="recent" onclick="showSection('recent')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <span>Recent</span>
+        </button>
+        <button class="nav-item" data-section="starred" onclick="showSection('starred')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>Starred</span>
+        </button>
+        <button class="nav-item" data-section="shared" onclick="showSection('shared')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+          <span>Shared by Me</span>
+        </button>
+        <button class="nav-item" data-section="trash" onclick="showSection('trash')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6m5 0V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2"/></svg>
+          <span>Trash</span>
+        </button>
+        <div class="nav-divider"></div>
+        <button class="nav-item" data-section="torrents" onclick="showSection('torrents')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+          <span>Torrents</span>
+        </button>
+        <button class="nav-item" data-section="queue" onclick="showSection('queue')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>
+          <span>Queue</span>
+        </button>
+        <button class="nav-item" data-section="playlists" onclick="showSection('playlists')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
+          <span>Playlists</span>
+        </button>
+        <div class="nav-divider"></div>
+        <button class="nav-item" data-section="storage" onclick="showSection('storage')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          <span>Storage</span>
+        </button>
+        <button class="nav-item" data-section="activity" onclick="showSection('activity')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span>Activity</span>
+        </button>
+        <button class="nav-item" data-section="settings" onclick="showSection('settings')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span>Settings</span>
+        </button>
+      </div>
+      <div class="sidebar-device" id="device-indicator">
+        <div class="device-dot idle"></div>
+        <span id="device-name">REDACTED_DEVICE</span>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main id="main-content">
+
+      <!-- ═══ HOME SECTION ═══ -->
+      <section id="section-home" class="section active">
+        <h1 class="section-title">Home</h1>
+
+        <!-- Continue Watching -->
+        <div class="card" id="continue-watching-card">
+          <div class="card-header">
+            <h2 class="card-title">Continue Watching</h2>
+          </div>
+          <div class="continue-watching-list" id="continue-watching-list">
+            <div class="empty-state small">No watch history yet.</div>
+          </div>
+        </div>
+
+        <!-- Quick Cast -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Quick Cast</h2>
+          </div>
+          <div class="quick-cast-row">
+            <input type="text" id="quick-cast-url" class="input"
+              placeholder="Paste YouTube URL, stream URL, or magnet link...">
+            <button class="btn-primary" onclick="quickCast()">Cast</button>
+          </div>
+        </div>
+
+        <!-- Stats Row -->
+        <div class="stats-row" id="home-stats">
+          <div class="stat-card">
+            <div class="stat-value" id="stat-active">--</div>
+            <div class="stat-label">Active Torrents</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-completed">--</div>
+            <div class="stat-label">Completed</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-down-speed">--</div>
+            <div class="stat-label">Download</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-value" id="stat-disk">--</div>
+            <div class="stat-label">Free Space</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ TORRENTS SECTION ═══ -->
+      <section id="section-torrents" class="section">
+        <div class="section-header">
+          <h1 class="section-title">Torrents</h1>
+          <div class="section-actions">
+            <button class="btn-secondary btn-sm" onclick="pauseAllTorrents()">Pause All</button>
+            <button class="btn-secondary btn-sm" onclick="resumeAllTorrents()">Resume All</button>
+          </div>
+        </div>
+
+        <!-- Add Torrent -->
+        <div class="card">
+          <div class="drop-zone" id="drop-zone" ondrop="handleDrop(event)" ondragover="handleDragOver(event)"
+            ondragleave="handleDragLeave(event)">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+              opacity="0.4">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            <p class="drop-zone-text">Drop .torrent file or paste magnet link</p>
+            <input type="file" id="torrent-file-input" accept=".torrent" style="display:none"
+              onchange="uploadTorrent(this)">
+            <div class="drop-zone-actions">
+              <button class="btn-secondary btn-sm"
+                onclick="document.getElementById('torrent-file-input').click()">Browse File</button>
+              <button class="btn-secondary btn-sm" onclick="pasteFromClipboard()">Paste from Clipboard</button>
+            </div>
+          </div>
+          <div class="magnet-input-row">
+            <input type="text" id="magnet-input" class="input" placeholder="magnet:?xt=urn:btih:...">
+            <button class="btn-primary" onclick="addMagnet()">Add</button>
+          </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-bar">
+          <div class="filter-tabs">
+            <button class="filter-tab active" onclick="filterTorrents('all', this)">All</button>
+            <button class="filter-tab" onclick="filterTorrents('downloading', this)">Downloading</button>
+            <button class="filter-tab" onclick="filterTorrents('seeding', this)">Seeding</button>
+            <button class="filter-tab" onclick="filterTorrents('stopped', this)">Paused</button>
+            <button class="filter-tab" onclick="filterTorrents('done', this)">Completed</button>
+          </div>
+          <input type="text" id="torrent-search" class="input input-sm" placeholder="Search..."
+            oninput="filterTorrentsByName(this.value)">
+        </div>
+
+        <!-- Torrent List -->
+        <div id="torrent-list" class="torrent-list">
+          <div class="empty-state">
+            <p>No torrents yet.</p>
+            <p class="empty-hint">Drop a magnet link or .torrent file above to get started.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ LIBRARY SECTION ═══ -->
+      <section id="section-library" class="section">
+        <div class="section-header">
+          <h1 class="section-title">My Files</h1>
+          <div class="section-actions" style="gap:6px;display:flex;align-items:center">
+            <button class="btn-secondary btn-sm" id="btn-delete-folder" onclick="deleteCurrentFolder()" style="display:none;color:var(--color-danger)" title="Delete this folder">Delete Folder</button>
+            <button class="btn-secondary btn-sm" onclick="createNewFolder()" title="New Folder">+ Folder</button>
+            <select class="input input-sm" style="width:auto;padding:4px 8px;font-size:12px"
+              onchange="sortFiles(this.value)" title="Sort by">
+              <option value="name">Name</option>
+              <option value="size">Size</option>
+              <option value="date">Date</option>
+              <option value="type">Type</option>
+            </select>
+            <button class="btn-icon" id="view-toggle-btn" onclick="toggleLibraryView()" title="Toggle view">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7" />
+                <rect x="14" y="3" width="7" height="7" />
+                <rect x="3" y="14" width="7" height="7" />
+                <rect x="14" y="14" width="7" height="7" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Breadcrumb -->
+        <div class="breadcrumb" id="breadcrumb"></div>
+
+        <!-- Search & Filter -->
+        <div class="filter-bar">
+          <input type="text" id="file-search" class="input input-sm" placeholder="Search files..."
+            oninput="filterFiles(this.value)">
+          <div class="filter-tabs">
+            <button class="filter-tab active" onclick="filterFileType('all', this)">All</button>
+            <button class="filter-tab" onclick="filterFileType('video', this)">Video</button>
+            <button class="filter-tab" onclick="filterFileType('audio', this)">Audio</button>
+          </div>
+        </div>
+
+        <!-- File List -->
+        <div id="file-list" class="file-list list-view"></div>
+      </section>
+
+      <!-- ═══ QUEUE SECTION ═══ -->
+      <section id="section-queue" class="section">
+        <div class="section-header">
+          <h1 class="section-title">Queue</h1>
+          <div class="section-actions">
+            <button class="btn-secondary btn-sm" onclick="shuffleQueue()">Shuffle</button>
+            <button class="btn-secondary btn-sm" onclick="clearQueue()">Clear</button>
+            <button class="btn-icon" onclick="toggleRepeat()" id="repeat-btn" title="Repeat">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="17 1 21 5 17 9" />
+                <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+                <polyline points="7 23 3 19 7 15" />
+                <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="queue-list" class="queue-list">
+          <div class="empty-state">
+            <p>Queue is empty.</p>
+            <p class="empty-hint">Browse the library to add items.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ PLAYLISTS SECTION ═══ -->
+      <section id="section-playlists" class="section">
+        <div class="section-header">
+          <h1 class="section-title">Playlists</h1>
+          <div class="section-actions">
+            <button class="btn-primary btn-sm" onclick="showCreatePlaylist()">+ New Playlist</button>
+          </div>
+        </div>
+        <div id="playlist-container">
+          <div id="playlist-list" class="playlist-grid"></div>
+          <div id="playlist-detail" class="playlist-detail" style="display:none"></div>
+        </div>
+      </section>
+
+      <!-- ═══ RECENT SECTION ═══ -->
+      <section id="section-recent" class="section">
+        <h1 class="section-title">Recent</h1>
+        <div id="recent-list" class="file-list list-view">
+          <div class="empty-state"><p>No recent files yet.</p><p class="empty-hint">Files you open, stream, or upload will appear here.</p></div>
+        </div>
+      </section>
+
+      <!-- ═══ STARRED SECTION ═══ -->
+      <section id="section-starred" class="section">
+        <h1 class="section-title">Starred</h1>
+        <div id="starred-list" class="file-list list-view">
+          <div class="empty-state"><p>No starred files.</p><p class="empty-hint">Click the star icon on any file to add it here.</p></div>
+        </div>
+      </section>
+
+      <!-- ═══ SHARED SECTION ═══ -->
+      <section id="section-shared" class="section">
+        <div class="section-header">
+          <h1 class="section-title">Shared by Me</h1>
+        </div>
+        <div id="shared-list" class="file-list list-view">
+          <div class="empty-state"><p>No active shares.</p><p class="empty-hint">Share files by right-clicking → Share or using the share button.</p></div>
+        </div>
+      </section>
+
+      <!-- ═══ TRASH SECTION ═══ -->
+      <section id="section-trash" class="section">
+        <div class="section-header">
+          <h1 class="section-title">Trash</h1>
+          <div class="section-actions">
+            <button class="btn-secondary btn-sm" onclick="emptyTrash()">Empty Trash</button>
+          </div>
+        </div>
+        <div id="trash-list" class="file-list list-view">
+          <div class="empty-state"><p>Trash is empty.</p><p class="empty-hint">Deleted files will appear here for 30 days.</p></div>
+        </div>
+      </section>
+
+      <!-- ═══ STORAGE SECTION ═══ -->
+      <section id="section-storage" class="section">
+        <h1 class="section-title">Storage</h1>
+        <div class="card" id="storage-card">
+          <div id="storage-info">
+            <div class="empty-state"><p>Loading storage info...</p></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══ ACTIVITY SECTION ═══ -->
+      <section id="section-activity" class="section">
+        <h1 class="section-title">Activity</h1>
+        <div id="activity-list">
+          <div class="empty-state"><p>No activity yet.</p></div>
+        </div>
+      </section>
+
+      <!-- ═══ SETTINGS SECTION ═══ -->
+      <section id="section-settings" class="section">
+        <h1 class="section-title">Settings</h1>
+        <div class="settings-groups">
+          <div class="card settings-group">
+            <h3 class="settings-group-title">Chromecast</h3>
+            <div class="setting-row">
+              <label>Device</label>
+              <select id="setting-device" class="input input-sm" onchange="selectDevice(this.value)">
+                <option>REDACTED_DEVICE</option>
+              </select>
+              <button class="btn-secondary btn-sm" onclick="scanDevices()">Scan</button>
+            </div>
+          </div>
+          <div class="card settings-group">
+            <h3 class="settings-group-title">Playback</h3>
+            <div class="setting-row">
+              <label>Auto-transcode incompatible audio</label>
+              <select id="setting-transcode" class="input input-sm" onchange="saveSetting('autoTranscode', this.value)">
+                <option value="auto">Auto</option>
+                <option value="always">Always</option>
+                <option value="never">Never</option>
+              </select>
+            </div>
+            <div class="setting-row">
+              <label>Auto-advance queue</label>
+              <input type="checkbox" id="setting-autoadvance" checked
+                onchange="saveSetting('autoAdvance', this.checked)">
+            </div>
+            <div class="setting-row">
+              <label>Position save interval</label>
+              <select id="setting-save-interval" class="input input-sm"
+                onchange="saveSetting('saveInterval', this.value)">
+                <option value="10">10 seconds</option>
+                <option value="30" selected>30 seconds</option>
+                <option value="60">60 seconds</option>
+              </select>
+            </div>
+          </div>
+          <div class="card settings-group">
+            <h3 class="settings-group-title">Interface</h3>
+            <div class="setting-row">
+              <label>Default view</label>
+              <select id="setting-view" class="input input-sm" onchange="saveSetting('defaultView', this.value)">
+                <option value="list">List</option>
+                <option value="grid">Grid</option>
+              </select>
+            </div>
+          </div>
+          <div class="card settings-group">
+            <h3 class="settings-group-title">Data</h3>
+            <div class="setting-row">
+              <button class="btn-secondary btn-sm" onclick="clearHistory()">Clear Watch History</button>
+              <button class="btn-secondary btn-sm" onclick="exportData()">Export Data</button>
+              <button class="btn-secondary btn-sm" onclick="document.getElementById('import-data').click()">Import
+                Data</button>
+              <input type="file" id="import-data" accept=".json" style="display:none" onchange="importData(this)">
+            </div>
+          </div>
+          <div class="card settings-group">
+            <h3 class="settings-group-title">Keyboard Shortcuts</h3>
+            <div class="shortcuts-list">
+              <div class="shortcut-row"><kbd>Space</kbd><span>Play / Pause</span></div>
+              <div class="shortcut-row"><kbd>&larr;</kbd><span>Seek -10s</span></div>
+              <div class="shortcut-row"><kbd>&rarr;</kbd><span>Seek +10s</span></div>
+              <div class="shortcut-row"><kbd>Shift+&larr;</kbd><span>Seek -30s</span></div>
+              <div class="shortcut-row"><kbd>Shift+&rarr;</kbd><span>Seek +30s</span></div>
+              <div class="shortcut-row"><kbd>&uarr; / &darr;</kbd><span>Volume +/- 10%</span></div>
+              <div class="shortcut-row"><kbd>M</kbd><span>Mute</span></div>
+              <div class="shortcut-row"><kbd>N</kbd><span>Next in queue</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Mini Player -->
+  <div id="mini-player" class="mini-player hidden">
+    <div class="mini-player-info">
+      <img id="mini-thumb" src="" alt="" class="mini-thumb">
+      <div class="mini-meta">
+        <div class="mini-title" id="mini-title">Nothing playing</div>
+        <div class="mini-sub" id="mini-sub"></div>
+      </div>
+    </div>
+    <div class="mini-controls">
+      <button class="ctrl-btn" onclick="seekRelative(-10)" title="-10s">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="1 4 1 10 7 10" />
+          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+        </svg>
+      </button>
+      <button class="ctrl-btn ctrl-play" id="mini-play-btn" onclick="togglePlayPause()">
+        <svg id="play-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <polygon points="5 3 19 12 5 21 5 3" />
+        </svg>
+        <svg id="pause-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+          <rect x="6" y="4" width="4" height="16" />
+          <rect x="14" y="4" width="4" height="16" />
+        </svg>
+      </button>
+      <button class="ctrl-btn" onclick="seekRelative(10)" title="+10s">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10" />
+          <path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10" />
+        </svg>
+      </button>
+      <button class="ctrl-btn" onclick="stopPlayback()" title="Stop">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="5" y="5" width="14" height="14" rx="1" />
+        </svg>
+      </button>
+    </div>
+    <div class="mini-scrubber-area">
+      <span class="mini-time" id="mini-time-current">0:00</span>
+      <div class="scrubber" id="mini-scrubber" onmousedown="scrubberMouseDown(event)" onclick="scrubberClick(event)">
+        <div class="scrubber-fill" id="mini-scrubber-fill"></div>
+        <div class="scrubber-handle" id="mini-scrubber-handle"></div>
+        <div class="scrubber-tooltip" id="mini-scrubber-tooltip">0:00</div>
+      </div>
+      <span class="mini-time" id="mini-time-duration">0:00</span>
+    </div>
+    <div class="mini-volume">
+      <button class="ctrl-btn" onclick="toggleMute()" title="Volume">
+        <svg id="vol-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2">
+          <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+          <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+        </svg>
+      </button>
+      <input type="range" id="volume-slider" class="volume-slider" min="0" max="100" value="80"
+        onchange="setVolume(this.value)" oninput="this.title=this.value+'%'">
+    </div>
+  </div>
+
+  <!-- Cast Modal -->
+  <div id="cast-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeCastModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 class="modal-title">Cast</h2>
+        <button class="btn-icon" onclick="closeCastModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-file-info">
+          <div class="modal-filename" id="cast-modal-filename"></div>
+          <div class="modal-duration" id="cast-modal-duration"></div>
+        </div>
+        <div class="modal-section">
+          <label>Start playback from:</label>
+          <input type="text" id="cast-seek-input" class="input" placeholder="00:00:00" value="00:00:00">
+          <div class="quick-seek-btns">
+            <button class="btn-secondary btn-sm" onclick="setSeek('00:00:00')">Start</button>
+            <button class="btn-secondary btn-sm" onclick="setSeek('00:05:00')">5m</button>
+            <button class="btn-secondary btn-sm" onclick="setSeek('00:10:00')">10m</button>
+            <button class="btn-secondary btn-sm" onclick="setSeek('00:15:00')">15m</button>
+            <button class="btn-secondary btn-sm" onclick="setSeek('00:20:00')">20m</button>
+          </div>
+          <button class="btn-primary resume-btn" id="cast-resume-btn" style="display:none" onclick="resumeCast()">
+            Resume from <span id="cast-resume-time"></span>
+          </button>
+        </div>
+        <div class="modal-section" id="subtitle-section" style="display:none">
+          <label>Subtitles:</label>
+          <select id="subtitle-select" class="input input-sm">
+            <option value="">None</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closeCastModal()">Cancel</button>
+          <button class="btn-primary" onclick="confirmCast()">Cast Now</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Playlist Modal -->
+  <div id="playlist-modal" class="modal-overlay" style="display:none"
+    onclick="if(event.target===this)closePlaylistModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 class="modal-title">New Playlist</h2>
+        <button class="btn-icon" onclick="closePlaylistModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="text" id="playlist-name-input" class="input" placeholder="Playlist name">
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closePlaylistModal()">Cancel</button>
+          <button class="btn-primary" onclick="createPlaylist()">Create</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div id="confirm-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeConfirm()">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 class="modal-title" id="confirm-title">Confirm</h2>
+        <button class="btn-icon" onclick="closeConfirm()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="confirm-message"></p>
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closeConfirm()">Cancel</button>
+          <button class="btn-primary" id="confirm-ok-btn">OK</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Password Prompt Modal -->
+  <div id="password-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closePasswordPrompt()">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 class="modal-title" id="password-title">Authenticate</h2>
+        <button class="btn-icon" onclick="closePasswordPrompt()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="password-message"></p>
+        <input type="password" id="password-input" class="input" style="margin-top:10px" placeholder="Enter password">
+        <div class="modal-actions" style="margin-top:16px">
+          <button class="btn-secondary" onclick="closePasswordPrompt()">Cancel</button>
+          <button class="btn-primary" id="password-ok-btn">Authorize</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stream Player Modal -->
+  <div id="stream-player-modal" class="modal-overlay" style="display:none"
+    onclick="if(event.target===this)closeStreamPlayer()">
+    <div class="modal" style="max-width:900px;width:95%">
+      <div class="modal-header">
+        <h2 class="modal-title" id="stream-player-title">Playing</h2>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn-secondary btn-sm" onclick="generateStreamUrlForCurrent()"
+            title="Generate shareable stream URL">🔗 Share URL</button>
+          <button class="btn-icon" onclick="closeStreamPlayer()">&times;</button>
+        </div>
+      </div>
+      <div class="modal-body" style="padding:0">
+        <div id="stream-video-container" style="display:none;background:#000;border-radius:0 0 8px 8px">
+          <video id="stream-video" controls playsinline volume="1" style="width:100%;max-height:70vh;display:block"></video>
+        </div>
+        <div id="stream-audio-container" style="display:none;padding:40px 20px;text-align:center">
+          <div style="font-size:64px;margin-bottom:16px">🎵</div>
+          <audio id="stream-audio" controls volume="1" style="width:100%"></audio>
+        </div>
+        <!-- Stream URL panel (shown after generating) -->
+        <div id="stream-url-panel" style="display:none;padding:16px;border-top:1px solid var(--color-border)">
+          <div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Shareable Stream URL</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="stream-url-input" class="input" readonly style="flex:1;font-size:13px;font-family:monospace">
+            <button class="btn-primary btn-sm" onclick="copyStreamUrlFromInput()">Copy</button>
+            <a id="stream-url-open" href="#" target="_blank" class="btn-secondary btn-sm" style="text-decoration:none">Open</a>
+          </div>
+          <div id="stream-url-expires" style="font-size:11px;color:var(--color-text-muted);margin-top:6px"></div>
+        </div>
+        <div id="stream-codec-badge" style="display:none;padding:8px 16px;font-size:11px;color:var(--color-text-muted);border-top:1px solid var(--color-border)"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add to Playlist Dropdown (positioned absolutely) -->
+  <div id="add-to-playlist-dropdown" class="dropdown-menu" style="display:none">
+    <div class="dropdown-header">Add to Playlist</div>
+    <div id="playlist-dropdown-items"></div>
+    <button class="dropdown-item" onclick="showCreatePlaylist()">+ New Playlist</button>
+  </div>
+
+  <!-- Mobile Bottom Nav -->
+  <nav id="mobile-nav" class="mobile-nav">
+    <button class="mobile-nav-item active" data-section="home" onclick="showSection('home')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+      <span>Home</span>
+    </button>
+    <button class="mobile-nav-item" data-section="library" onclick="showSection('library')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+      <span>Files</span>
+    </button>
+    <button class="mobile-nav-item" data-section="torrents" onclick="showSection('torrents')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+      <span>Torrents</span>
+    </button>
+    <button class="mobile-nav-item" data-section="queue" onclick="showSection('queue')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /></svg>
+      <span>Queue</span>
+    </button>
+    <button class="mobile-nav-item" data-section="settings" onclick="showSection('settings')">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68V3a2 2 0 0 1 4 0v.09c.09.67.56 1.22 1.18 1.42a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83" /></svg>
+      <span>Settings</span>
+    </button>
+  </nav>
+
+  <!-- Upload Overlay -->
+  <div id="upload-overlay" class="upload-overlay" style="display:none">
+    <div class="upload-overlay-content">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+      </svg>
+      <p>Drop files here to upload</p>
+    </div>
+  </div>
+
+  <!-- Upload Progress Panel -->
+  <div id="upload-progress" class="upload-progress-panel" style="display:none">
+    <div class="upload-progress-header">
+      <span>Uploading</span>
+      <button class="btn-icon" onclick="document.getElementById('upload-progress').style.display='none'">&times;</button>
+    </div>
+    <div id="upload-progress-list"></div>
+  </div>
+
+  <!-- Share Modal -->
+  <div id="share-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeShareModal()">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 class="modal-title">Share</h2>
+        <button class="btn-icon" onclick="closeShareModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="share-modal-filename" style="font-weight:600;margin-bottom:12px"></div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--color-text-muted)">Permissions</label>
+          <select id="share-permissions" class="input input-sm">
+            <option value="view">View only</option>
+            <option value="download" selected>View & Download</option>
+          </select>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--color-text-muted)">Expiration</label>
+          <select id="share-expiry" class="input input-sm">
+            <option value="1">1 hour</option>
+            <option value="24" selected>24 hours</option>
+            <option value="168">7 days</option>
+            <option value="720">30 days</option>
+            <option value="">Never</option>
+          </select>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:12px;color:var(--color-text-muted)">Password (optional)</label>
+          <input type="text" id="share-password" class="input input-sm" placeholder="Leave empty for no password">
+        </div>
+        <div class="modal-actions">
+          <button class="btn-secondary" onclick="closeShareModal()">Cancel</button>
+          <button class="btn-primary" onclick="confirmShare()">Create Link</button>
+        </div>
+        <div id="share-result" style="display:none;margin-top:16px;padding:12px;background:var(--color-bg-secondary);border-radius:8px;border:1px solid var(--color-border)">
+          <div style="font-size:11px;color:var(--color-text-muted);margin-bottom:6px">Share Link</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="share-url-input" class="input" readonly style="flex:1;font-size:12px;font-family:monospace">
+            <button class="btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('share-url-input').value);toast('Link copied!','success')">Copy</button>
+          </div>
+          <div id="share-qr" style="text-align:center;margin-top:12px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stream URL Modal -->
+  <div id="stream-url-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeStreamUrlModal()">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 class="modal-title">Stream URL</h2>
+        <button class="btn-icon" onclick="closeStreamUrlModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="stream-url-modal-filename" style="font-weight:600;margin-bottom:12px"></div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--color-text-muted)">Shareable URL (works without VPN if public URL configured)</label>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+            <input type="text" id="stream-url-modal-input" class="input" readonly style="flex:1;font-size:12px;font-family:monospace">
+            <button class="btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('stream-url-modal-input').value);toast('URL copied!','success')">Copy</button>
+          </div>
+        </div>
+        <div id="stream-url-modal-qr" style="text-align:center;margin:16px 0"></div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <a id="stream-url-modal-open" href="#" target="_blank" class="btn-secondary btn-sm" style="text-decoration:none">Open in Browser</a>
+        </div>
+        <div id="stream-url-modal-expires" style="font-size:11px;color:var(--color-text-muted);margin-top:12px;text-align:center"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

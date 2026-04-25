@@ -1,0 +1,51 @@
+[
+  {
+    "name": "Server Portal",
+    "description": "This page — directory of all services",
+    "port": 8001,
+    "icon": "🏠",
+    "color": "#8b949e"
+  },
+  {
+    "name": "Ollama",
+    "description": "Local LLM inference server",
+    "port": 8002,
+    "icon": "🦙",
+    "color": "#a371f7"
+  },
+  {
+    "name": "Twitter Bot Dashboard",
+    "description": "Monitor and control the follow/unfollow bot",
+    "port": 8003,
+    "icon": "🤖",
+    "color": "#58a6ff"
+  },
+  {
+    "name": "Video Manager",
+    "description": "Manage videos and cast to devices",
+    "port": 8004,
+    "icon": "🎬",
+    "color": "#f0883e"
+  },
+  {
+    "name": "Whisper Transcriber",
+    "description": "Audio & video transcription · large-v3",
+    "port": 8005,
+    "icon": "🎙️",
+    "color": "#7c3aed"
+  },
+  {
+    "name": "OCR Engine",
+    "description": "Image & PDF text extraction · 109 languages",
+    "port": 8006,
+    "icon": "🔍",
+    "color": "#7c3aed"
+  },
+  {
+    "name": "System Stats",
+    "description": "Live CPU, GPU, RAM, disk, and service health",
+    "port": 8007,
+    "icon": "📊",
+    "color": "#2ea043"
+  }
+]

@@ -1,0 +1,19 @@
+[Unit]
+Description=System Stats Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__/system-stats
+ExecStart=/usr/bin/python3 __INSTALL_DIR__/system-stats/server.py --port 8007
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=system-stats
+
+[Install]
+WantedBy=multi-user.target

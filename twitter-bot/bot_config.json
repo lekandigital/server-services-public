@@ -1,0 +1,8 @@
+{
+  "follow_limit": 320,
+  "unfollow_limit": 800,
+  "like_limit": 600,
+  "unfollow_after_days": 4,
+  "max_following_delta": 400,
+  "session_rotate_hours": 4
+}
