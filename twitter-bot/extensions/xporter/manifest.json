@@ -1,0 +1,58 @@
+{
+   "action": {
+      "default_icon": {
+         "128": "icons/icon128.png",
+         "16": "icons/icon16.png",
+         "48": "icons/icon48.png"
+      },
+      "default_popup": "popup/popup.html"
+   },
+   "background": {
+      "service_worker": "background/service-worker.js"
+   },
+   "content_scripts": [
+      {
+         "js": [
+            "content/content.js"
+         ],
+         "matches": [
+            "https://x.com/*",
+            "https://twitter.com/*"
+         ],
+         "run_at": "document_idle"
+      }
+   ],
+   "default_locale": "en",
+   "description": "__MSG_extDescription__",
+   "host_permissions": [
+      "https://x.com/*",
+      "https://api.x.com/*",
+      "https://twitter.com/*"
+   ],
+   "icons": {
+      "128": "icons/icon128.png",
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+   },
+   "manifest_version": 3,
+   "name": "__MSG_extName__",
+   "permissions": [
+      "cookies",
+      "activeTab",
+      "tabs",
+      "downloads",
+      "storage"
+   ],
+   "version": "1.0.10",
+   "web_accessible_resources": [
+      {
+         "matches": [
+            "https://x.com/*",
+            "https://twitter.com/*"
+         ],
+         "resources": [
+            "content/interceptor.js"
+         ]
+      }
+   ]
+}

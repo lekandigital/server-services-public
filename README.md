@@ -15,6 +15,7 @@ All services running on the home server, organized for deployment on any Ubuntu 
 │  :8005  🎙️  Whisper Transcriber (Python/Flask+GPU)  │
 │  :8006  🔍  OCR Engine         (Python/Flask+GPU)   │
 │  :8007  📊  System Stats       (Python/Flask)       │
+│  :8008  🖼️  ML Image Studio    (Python/Flask+GPU)   │
 │                                                     │
 │  Services managed by systemd                        │
 │  Ollama GUI runs via Docker Compose                 │
@@ -63,6 +64,7 @@ The deploy script will:
 | 8005 | [Whisper Transcriber](whisper-transcriber/) | Python/Flask + CUDA | `whisper-transcriber/` |
 | 8006 | [OCR Engine](ocr-engine/) | Python/Flask + CUDA | `ocr-engine/` |
 | 8007 | [System Stats](system-stats/) | Python/Flask | `system-stats/` |
+| 8008 | [ML Image Studio](image-studio/) | Python/Flask + CUDA | `image-studio/` |
 
 ## System Requirements
 
@@ -72,12 +74,13 @@ The deploy script will:
 - **Docker:** 28+ (for Ollama GUI)
 - **GPU:** NVIDIA with CUDA (for Whisper + OCR GPU acceleration)
 - **RAM:** 8GB+ recommended (Whisper large-v3 model uses ~3GB VRAM)
+- **Disk:** ~1GB extra for ML Image Studio model weights (auto-downloaded)
 
 ## Managing Services
 
 ```bash
 # Check all service status
-sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats
+sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio
 
 # Restart a service
 sudo systemctl restart <service-name>
@@ -86,7 +89,7 @@ sudo systemctl restart <service-name>
 journalctl -u <service-name> -f
 
 # Stop all
-for s in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats; do sudo systemctl stop $s; done
+for s in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio; do sudo systemctl stop $s; done
 ```
 
 ## Private + Public Repo Workflow
@@ -172,6 +175,13 @@ server-services/
     ├── server.py
     ├── requirements.txt
     ├── system-stats.service
+    └── README.md
+
+└── image-studio/                ← :8008
+    ├── server.py
+    ├── static/index.html
+    ├── requirements.txt
+    ├── image-studio.service
     └── README.md
 ```
 

@@ -1,0 +1,10 @@
+{
+   "extDescription": {
+      "description": "Extension description for CWS",
+      "message": "从任何 X (Twitter) 个人资料导出帖子、粉丝和关注。CSV、JSON、Excel。免费、无限制、100%私密。14种语言。"
+   },
+   "extName": {
+      "description": "Extension name for CWS",
+      "message": "XPorter — 免费 X/Twitter 导出: 帖子、粉丝 CSV/JSON/XLSX"
+   }
+}

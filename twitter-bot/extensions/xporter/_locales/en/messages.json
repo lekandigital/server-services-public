@@ -1,0 +1,10 @@
+{
+   "extDescription": {
+      "description": "Extension description for CWS",
+      "message": "Export posts, followers & following from any X (Twitter) profile to CSV, JSON, Excel. Free, unlimited, 100% private. 14 languages."
+   },
+   "extName": {
+      "description": "Extension name for CWS",
+      "message": "XPorter — Free X/Twitter Export: Posts, Followers · CSV/JSON/XLSX"
+   }
+}

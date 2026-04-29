@@ -34,6 +34,7 @@ SERVICE_MAP = {
     8005: "faster-whisper",
     8006: "paddleocr",
     8007: "system-stats",
+    8008: "image-studio",
     9091: "transmission-daemon",
 }
 
@@ -86,6 +87,13 @@ DEFAULT_SERVICES = [
         "port": 8007,
         "icon": "\U0001f4ca",
         "color": "#2ea043"
+    },
+    {
+        "name": "ML Image Studio",
+        "description": "GPU image editing \u00b7 bg removal, upscale, style transfer",
+        "port": 8008,
+        "icon": "\U0001f5bc\ufe0f",
+        "color": "#7c3aed"
     }
 ]
 
@@ -98,6 +106,32 @@ def normalize_services(services):
     return sorted(services, key=lambda service: int(service.get("port", 0)))
 
 
+def merge_with_defaults(services):
+    merged = []
+    seen_ports = set()
+    default_by_port = {int(service["port"]): service for service in DEFAULT_SERVICES}
+
+    for service in services:
+        port = int(service.get("port", 0))
+        base = default_by_port.get(port, {})
+        merged_service = {
+            "name": service.get("name") or base.get("name") or f"Service {port}",
+            "description": service.get("description", base.get("description", "")),
+            "port": port,
+            "icon": service.get("icon") or base.get("icon", "📦"),
+            "color": service.get("color") or base.get("color", "#8b949e"),
+        }
+        merged.append(merged_service)
+        seen_ports.add(port)
+
+    for default_service in DEFAULT_SERVICES:
+        port = int(default_service["port"])
+        if port not in seen_ports:
+            merged.append(dict(default_service))
+
+    return normalize_services(merged)
+
+
 def load_services():
     path = _services_path()
     if not os.path.exists(path):
@@ -105,7 +139,9 @@ def load_services():
         return normalize_services(DEFAULT_SERVICES)
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return normalize_services(json.load(f))
+            services = merge_with_defaults(json.load(f))
+        save_services(services)
+        return services
     except Exception:
         return normalize_services(DEFAULT_SERVICES)
 
@@ -113,7 +149,7 @@ def load_services():
 def save_services(services):
     path = _services_path()
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(normalize_services(services), f, indent=2, ensure_ascii=False)
+        json.dump(merge_with_defaults(services), f, indent=2, ensure_ascii=False)
 
 
 def check_port(port, timeout=1):

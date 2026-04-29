@@ -1,0 +1,61 @@
+{
+   "action": {
+      "default_popup": "popup/popup.html",
+      "default_title": "xExport"
+   },
+   "background": {
+      "service_worker": "background.js"
+   },
+   "content_scripts": [
+      {
+         "css": [
+            "css/content_script.css"
+         ],
+         "js": [
+            "content_scripts/content_script.js"
+         ],
+         "matches": [
+            "*://x.com/*",
+            "*://twitter.com/*",
+            "*://mobile.twitter.com/*"
+         ],
+         "run_at": "document_end"
+      }
+   ],
+   "content_security_policy": {
+      "extension_pages": "default-src 'self'; connect-src *; font-src *; img-src *; style-src * 'unsafe-inline'"
+   },
+   "description": "The easiest way to export Twitter followers and following.",
+   "host_permissions": [
+      "https://tweetsearcher.com/",
+      "*://x.com/*",
+      "*://twitter.com/*",
+      "*://mobile.twitter.com/*"
+   ],
+   "icons": {
+      "128": "icons/icon_128.png",
+      "48": "icons/icon_48.png"
+   },
+   "manifest_version": 3,
+   "name": "xExport: Export Twitter Followers & Following",
+   "permissions": [
+      "tabs",
+      "webNavigation"
+   ],
+   "version": "1.0.4",
+   "web_accessible_resources": [
+      {
+         "matches": [
+            "*://x.com/*",
+            "*://twitter.com/*",
+            "*://mobile.twitter.com/*"
+         ],
+         "resources": [
+            "page_scripts/*",
+            "sidebar/*",
+            "images/*",
+            "libs/*"
+         ]
+      }
+   ]
+}
