@@ -1,0 +1,10 @@
+{
+   "extDescription": {
+      "description": "Extension description for CWS",
+      "message": "Ekspor postingan, pengikut dan mengikuti dari profil X (Twitter) ke CSV, JSON, Excel. Gratis, tak terbatas, 100% pribadi."
+   },
+   "extName": {
+      "description": "Extension name for CWS",
+      "message": "XPorter — Ekspor X/Twitter Gratis: Postingan, Pengikut CSV/JSON"
+   }
+}

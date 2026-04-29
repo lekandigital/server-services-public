@@ -18,6 +18,8 @@ from urllib3.exceptions import MaxRetryError
 from urllib.error import URLError
 import sys
 
+from queue_dedupe import dedupe_best_pending
+
 # Helper function to update queue.json status
 def update_queue_status(username, new_status, skip_reason=None):
     """Update a user's status in queue.json and append to history.jsonl"""
@@ -2866,85 +2868,49 @@ def main():
                 
                 followed_set = set(followed_df["username"].str.lower().values)
 
-                # Collect sources from queue.json only (input.csv is legacy_import_pre_queue)
-                all_sources = {}
-                
-                # Load queue.json
                 queue = []
+                usernames = []
                 queue_file = "queue.json"
                 if os.path.exists(queue_file):
                     try:
                         with open(queue_file, 'r') as f:
                             queue = json.load(f)
                         print(f"📋 Loaded queue.json: {len(queue)} total entries")
-                        
-                        # Group by source_list (only pending_follow status)
-                        for entry in queue:
-                            if entry.get("status") == "pending_follow":
-                                source = entry.get("source_list", "unknown")
-                                if source not in all_sources:
-                                    all_sources[source] = []
-                                all_sources[source].append(entry["username"])
-                    except Exception as e:
-                        print(f"⚠️ Error loading queue.json: {e}")
-                
-                if not all_sources:
-                    print("⚠️ No pending follows in queue.json")
-                    usernames = []
-                else:
-                    # Count how many lists each username appears in (for dedup)
-                    username_list_count = {}
-                    for source, users in all_sources.items():
-                        for u in users:
+
+                        pending_entries = [
+                            e for e in queue if e.get("status") == "pending_follow"
+                        ]
+
+                        deduped_ordered, _sizes = dedupe_best_pending(pending_entries)
+
+                        skipped_followed = 0
+                        skipped_unfollowed = 0
+
+                        for e in deduped_ordered:
+                            u = e.get("username", "")
                             u_lower = u.lower()
-                            if u_lower not in username_list_count:
-                                username_list_count[u_lower] = set()
-                            username_list_count[u_lower].add(source)
-                    
-                    # Sort sources by size (smallest first - better quality)
-                    sorted_sources = sorted(all_sources.keys(), key=lambda s: len(all_sources[s]))
-                    
-                    print(f"📊 Sources by size (smallest first):")
-                    for src in sorted_sources:
-                        print(f"   - {src}: {len(all_sources[src])} users")
-                    
-                    # Build ordered list: smallest lists first
-                    # Skip: already followed, already unfollowed, duplicates across lists
-                    usernames = []
-                    seen_usernames = set()
-                    skipped_followed = 0
-                    skipped_unfollowed = 0
-                    skipped_dedup = 0
-                    
-                    for source in sorted_sources:
-                        for u in all_sources[source]:
-                            u_lower = u.lower()
-                            
-                            # Skip if we've already added this user in this run
-                            if u_lower in seen_usernames:
-                                continue
-                            
-                            # Skip if already followed
                             if u_lower in followed_set:
                                 skipped_followed += 1
                                 continue
-                            
-                            # Skip if already unfollowed (don't re-follow)
                             if u_lower in unfollowed_set:
                                 skipped_unfollowed += 1
                                 continue
-                            
-                            # Skip if user appears in more than one list (lower quality)
-                            if len(username_list_count.get(u_lower, set())) > 1:
-                                skipped_dedup += 1
-                                continue
-                            
                             usernames.append(u)
-                            seen_usernames.add(u_lower)
-                    
-                    total_raw = sum(len(v) for v in all_sources.values())
-                    print(f"📋 Total raw: {total_raw}, pending: {len(usernames)}")
-                    print(f"   Skipped: {skipped_followed} already followed, {skipped_unfollowed} already unfollowed, {skipped_dedup} multi-list dedup")
+
+                        total_raw = len(pending_entries)
+                        dup_removed = total_raw - len(deduped_ordered)
+                        if not pending_entries:
+                            print("⚠️ No pending follows in queue.json")
+                        else:
+                            print(f"📋 Pending rows: {total_raw}, unique usernames: {len(deduped_ordered)} ({dup_removed} duplicate rows dropped)")
+                            print(f"   Follow order: smallest source list first, then smallest followers_count (missing last)")
+                            print(f"   Eligible for follow actions now: {len(usernames)}")
+                            print(f"   Skipped: {skipped_followed} already in followed.csv, {skipped_unfollowed} in unfollowed.csv")
+                    except Exception as e:
+                        print(f"⚠️ Error loading queue.json: {e}")
+                        usernames = []
+                else:
+                    print("⚠️ No queue.json found")
 
                 # Calculate following difference (case-insensitive comparison)
                 followed_usernames_lower = followed_df["username"].str.lower()

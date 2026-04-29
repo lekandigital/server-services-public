@@ -1,0 +1,171 @@
+
+.container[data-v-a18bed98] {
+  display: flex;
+  flex-direction: column;
+}
+.item[data-v-a18bed98] {
+  text-align: center;
+  padding: 10px;
+  margin: 20px 10px 10px 10px;
+}
+
+html,body {
+  color: #111;
+  font-family: 'Rubik','Helvetica','Arial',sans-serif!important;
+  font-size: 12px;
+  margin: 0px;
+  padding: 0px;
+}
+
+.d-body {
+  width: 300px;
+}
+
+.avatar {
+  vertical-align: middle;
+  width: 75px;
+  height: 75px;
+  border-radius: 50%;
+  margin: 4px 0 10px 0;
+  text-align: center;
+  background: black;
+}
+
+.btn {
+  cursor: pointer;
+}
+
+.topbar {
+  background: #f63854;
+  color:white;
+}
+
+.info-head {
+  background: #f63854;
+  color: white;
+  box-shadow: 0 10px 6px -6px #777;
+}
+
+.info-body {
+  margin:0 10px 10px 10px;
+  text-align: center;
+}
+
+table {
+  table-layout : fixed;
+}
+
+.info-title {
+  margin: 10px 0 5px 0;
+  font-size: 15px;
+  color: #96A5A5;
+}
+
+.info-text {
+  border-bottom: 1px solid #bdc3c7;
+  font-size: 15px;
+}
+
+.title {
+  border-bottom: 1px solid #ecf0f1;
+  padding-bottom: 6px;
+}
+
+.title > span {
+  border-bottom: 1px solid #bdc3c7;
+  padding-bottom: 6px;
+  padding-right: 6px;
+  color: #34495e;
+}
+
+input {
+  border-radius: 2px;
+}
+
+.d-btn {
+  background-color: #f63854;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  color: white;
+  padding: 12px;
+}
+
+.dis-d-btn {
+  background-color: #ccc;
+  border: none;
+  border-radius: 2px;
+  color: white;
+  padding: 12px;
+}
+
+textarea {
+  padding: 4px;
+  border-radius: 4px;
+  max-width: 270px;
+  min-width: 270px;
+  max-height: 300px;
+  min-height: 140px;
+}
+
+select {
+  border: 1px solid gray;
+}
+
+.tooltip {
+  position: relative;
+  display: inline-block;
+  border-bottom: 1px dotted black;
+}
+
+.tooltip .tooltiptext {
+  visibility: hidden;
+  width: 235px;
+  background-color: black;
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
+  border-radius: 3px;
+  padding: 5px 0;
+  position: absolute;
+  z-index: 1;
+  bottom: 150%;
+  left: 50%;
+}
+
+.tooltip .tooltiptext::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  /* left: 80%; */
+  margin-left: -5px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: black transparent transparent transparent;
+}
+.tooltip:hover .tooltiptext {
+  visibility: visible;
+}
+
+.tooltiptext-left {
+  margin-left: -48px;
+}
+.tooltiptext-left:after {
+  left: 20%;
+}
+
+.tooltiptext-right {
+  margin-left: -188px;
+}
+.tooltiptext-right:after {
+  left: 80%;
+}
+
+.tooltiptext-center {
+  margin-left: -118px;
+}
+.tooltiptext-center:after {
+  left: 50%;
+}
+
+

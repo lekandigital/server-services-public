@@ -1,0 +1,92 @@
+
+#xExport-sidebar-wrapper {
+  box-sizing: border-box;
+  position: fixed;
+  z-index: 42424242;
+  right: 0px;
+  top: 0px;
+  width: 400px;
+  max-width: 100%;
+  box-shadow: rgba(136, 153, 166, 0.2) 0px 0px 15px, rgba(136, 153, 166, 0.15) 0px 0px 3px 1px;
+  height: 100vh;
+  background: #17202A;
+  overflow: hidden;
+  transition: transform 0.3s ease-in-out 0s;
+}
+
+#xExport-sidebar-open-button {
+  position: fixed;
+  right: 0px;
+  top: 0px;
+  z-index: 42424242;
+  color: rgb(255, 255, 255);
+  font-family: TwitterChirp, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-weight: 500;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 5px 10px;
+  border-radius: 0px 0px 0px 10px;
+  box-shadow: rgba(136, 153, 166, 0.2) 0px 0px 15px, rgba(136, 153, 166, 0.15) 0px 0px 3px 1px;
+}
+
+#xExport-sidebar-open-button:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+#xExport-overlay {
+  font-family: "Open Sans","Helvetica Neue",Arial,sans-serif;
+  position: fixed;
+  top: 0px;
+  left: 0px;
+  width: 100%;
+  height: 100%;
+  z-index: 42424249;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+#xExport-overlay::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(to right,#059669,#1d4ed8);
+  opacity: 0.8;
+  z-index: -1;
+}
+
+.overlay-content {
+  position: relative;
+  color: white;
+  background-color: #17202A;
+  padding: 20px;
+  border-radius: 4px;
+  max-width: 600px;
+  min-width: 400px;
+  z-index: 1;
+}
+.overlay-title {
+  margin: 0 0 16px;
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.overlay-text {
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.overlay-button {
+  font-size: 14px;
+  font-weight: bold;
+  margin-top: 20px;
+  padding: 10px 25px;
+  background-color: #EC4899;
+  border: none;
+  border-radius: 100px;
+  cursor: pointer;
+  color: white;
+}

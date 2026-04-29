@@ -1,0 +1,1039 @@
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ML Image Studio</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🖼️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f6f0e7;
+  --ink:#1d1b18;
+  --muted:#6d645a;
+  --paper:#fffaf2;
+  --panel:#fff7ec;
+  --panel-strong:#fff1d8;
+  --line:rgba(48,34,18,.12);
+  --deep:#18222c;
+  --deep-2:#203342;
+  --accent:#ff6b35;
+  --accent-2:#0f766e;
+  --accent-3:#ffd166;
+  --success:#0f9d58;
+  --danger:#d14343;
+  --warn:#c77d10;
+  --shadow:0 20px 55px rgba(55,35,15,.14);
+  --radius:22px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  min-height:100vh;
+  color:var(--ink);
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  background:
+    radial-gradient(circle at top left,rgba(255,209,102,.45),transparent 32%),
+    radial-gradient(circle at top right,rgba(15,118,110,.18),transparent 22%),
+    linear-gradient(180deg,#fbf6ee 0%,#f6f0e7 38%,#efe3d2 100%);
+}
+body::before{
+  content:'';
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background-image:
+    linear-gradient(rgba(29,27,24,.03) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(29,27,24,.03) 1px,transparent 1px);
+  background-size:24px 24px;
+  mask-image:linear-gradient(180deg,rgba(0,0,0,.22),transparent 80%);
+}
+.shell{position:relative;max-width:1400px;margin:0 auto;padding:20px}
+.hero{
+  display:grid;
+  grid-template-columns:1.4fr .9fr;
+  gap:18px;
+  align-items:stretch;
+}
+.masthead,.hero-side,.studio,.history{box-shadow:var(--shadow)}
+.masthead{
+  background:
+    linear-gradient(135deg,rgba(24,34,44,.96),rgba(28,41,54,.98)),
+    radial-gradient(circle at top right,rgba(255,107,53,.25),transparent 26%);
+  color:#f8f3ea;
+  border-radius:30px;
+  padding:28px;
+  position:relative;
+  overflow:hidden;
+}
+.masthead::after{
+  content:'';
+  position:absolute;
+  right:-30px;
+  bottom:-40px;
+  width:240px;
+  height:240px;
+  border-radius:50%;
+  background:radial-gradient(circle,rgba(255,209,102,.28),transparent 66%);
+}
+.eyebrow{
+  display:inline-flex;
+  gap:10px;
+  align-items:center;
+  padding:8px 12px;
+  border-radius:999px;
+  background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.1);
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.14em;
+}
+.masthead h1{
+  font-size:clamp(2.6rem,5.5vw,5rem);
+  line-height:.92;
+  letter-spacing:-.06em;
+  margin-top:16px;
+  max-width:760px;
+}
+.masthead p{
+  margin-top:14px;
+  max-width:650px;
+  color:rgba(248,243,234,.75);
+  font-size:15px;
+  line-height:1.7;
+}
+.hero-badges,.hero-actions,.tool-stats,.history-head,.result-meta,.result-actions{display:flex;gap:12px;flex-wrap:wrap}
+.hero-badges{margin-top:20px}
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  border-radius:999px;
+  padding:10px 14px;
+  border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.08);
+  color:#f8f3ea;
+  font-size:12px;
+}
+.badge .dot{width:9px;height:9px;border-radius:50%;background:var(--success);box-shadow:0 0 10px rgba(15,157,88,.5)}
+.hero-actions{margin-top:22px}
+.hero-actions button,.process-btn,.result-actions button{
+  appearance:none;
+  border:none;
+  cursor:pointer;
+  font:inherit;
+}
+.hero-actions button{
+  padding:12px 16px;
+  border-radius:999px;
+  font-size:13px;
+  font-weight:700;
+}
+.hero-actions .primary{
+  background:linear-gradient(135deg,var(--accent),#ff9666);
+  color:#fff;
+}
+.hero-actions .secondary{
+  background:rgba(255,255,255,.08);
+  color:#f8f3ea;
+  border:1px solid rgba(255,255,255,.12);
+}
+.hero-side{
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:30px;
+  padding:22px;
+  display:grid;
+  gap:14px;
+}
+.hero-card{
+  border-radius:22px;
+  padding:18px;
+  background:linear-gradient(180deg,var(--panel),var(--panel-strong));
+  border:1px solid var(--line);
+}
+.hero-card.kicker{
+  background:linear-gradient(135deg,#fff0dd,#ffe1bd);
+}
+.hero-card h2{
+  font-size:13px;
+  text-transform:uppercase;
+  letter-spacing:.14em;
+  color:var(--muted);
+}
+.hero-card .big{
+  margin-top:8px;
+  font-size:30px;
+  line-height:1;
+  letter-spacing:-.06em;
+  font-weight:700;
+}
+.hero-card p{
+  margin-top:10px;
+  color:var(--muted);
+  font-size:14px;
+  line-height:1.6;
+}
+.mono{font-family:'IBM Plex Mono',monospace}
+.tool-stats{margin-top:10px}
+.tool-stats span{
+  border-radius:14px;
+  padding:8px 10px;
+  background:rgba(24,34,44,.06);
+  color:var(--deep);
+  font-size:12px;
+}
+.main{
+  display:grid;
+  grid-template-columns:320px minmax(0,1fr);
+  gap:18px;
+  margin-top:18px;
+  align-items:start;
+}
+.sidebar,.studio,.history{
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:30px;
+}
+.sidebar{padding:18px;position:sticky;top:18px}
+.sidebar-head h3,.history-head h2{
+  font-size:18px;
+  letter-spacing:-.03em;
+}
+.sidebar-head p,.history-head p{
+  margin-top:6px;
+  font-size:13px;
+  color:var(--muted);
+  line-height:1.55;
+}
+.tools{display:grid;gap:10px;margin-top:16px}
+.tool-card{
+  border:1px solid var(--line);
+  border-radius:22px;
+  padding:16px;
+  cursor:pointer;
+  background:linear-gradient(180deg,#fffdf9,#fff7ed);
+  transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease,background .18s ease;
+}
+.tool-card:hover{transform:translateY(-1px);border-color:rgba(255,107,53,.35);box-shadow:0 12px 28px rgba(255,107,53,.08)}
+.tool-card.active{
+  background:linear-gradient(135deg,#ffe7d7,#fff6e6);
+  border-color:rgba(255,107,53,.42);
+  box-shadow:0 16px 34px rgba(255,107,53,.12);
+}
+.tool-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.tool-icon{
+  width:48px;
+  height:48px;
+  border-radius:16px;
+  display:grid;
+  place-items:center;
+  background:#fff;
+  border:1px solid rgba(24,34,44,.08);
+  font-size:24px;
+}
+.tool-index{
+  font-size:11px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.14em;
+}
+.tool-name{margin-top:12px;font-size:16px;font-weight:700}
+.tool-desc{margin-top:5px;font-size:13px;line-height:1.55;color:var(--muted)}
+.sidebar-note{
+  margin-top:16px;
+  border-radius:20px;
+  padding:16px;
+  background:var(--deep);
+  color:#f8f3ea;
+}
+.sidebar-note strong{display:block;font-size:14px}
+.sidebar-note p{margin-top:8px;font-size:12px;line-height:1.65;color:rgba(248,243,234,.72)}
+.studio{
+  padding:18px;
+  display:grid;
+  gap:16px;
+}
+.studio-head{
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:16px;
+  align-items:end;
+}
+.studio-copy h2{
+  font-size:30px;
+  letter-spacing:-.05em;
+}
+.studio-copy p{
+  margin-top:8px;
+  font-size:14px;
+  color:var(--muted);
+  line-height:1.65;
+  max-width:720px;
+}
+.studio-state{
+  display:grid;
+  gap:10px;
+  justify-items:end;
+}
+.studio-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 14px;
+  border-radius:999px;
+  background:#fff;
+  border:1px solid var(--line);
+  font-size:12px;
+}
+.studio-chip strong{font-weight:700}
+.studio-grid{
+  display:grid;
+  grid-template-columns:minmax(0,1.2fr) minmax(300px,.8fr);
+  gap:16px;
+}
+.stage,.control-panel{
+  border-radius:26px;
+  border:1px solid var(--line);
+  background:linear-gradient(180deg,#fffdf9,#fff8ef);
+}
+.stage{padding:16px}
+.control-panel{padding:16px}
+.upload-zone{
+  border:2px dashed rgba(15,118,110,.25);
+  border-radius:24px;
+  padding:28px;
+  text-align:center;
+  transition:border-color .18s ease,background .18s ease,transform .18s ease;
+  cursor:pointer;
+  background:
+    radial-gradient(circle at top,rgba(15,118,110,.08),transparent 45%),
+    linear-gradient(180deg,#fffcf7,#fff5e8);
+}
+.upload-zone:hover,.upload-zone.drag{
+  border-color:rgba(255,107,53,.5);
+  background:
+    radial-gradient(circle at top,rgba(255,107,53,.1),transparent 45%),
+    linear-gradient(180deg,#fff8ef,#ffefdc);
+  transform:translateY(-1px);
+}
+.upload-zone input{display:none}
+.upload-mark{
+  width:72px;
+  height:72px;
+  margin:0 auto 14px;
+  border-radius:24px;
+  display:grid;
+  place-items:center;
+  background:linear-gradient(135deg,var(--accent),#ff9467);
+  color:#fff;
+  font-size:30px;
+  box-shadow:0 16px 30px rgba(255,107,53,.22);
+}
+.upload-zone h3{font-size:22px;letter-spacing:-.04em}
+.upload-zone p{margin-top:8px;color:var(--muted);font-size:14px;line-height:1.6}
+.preview-thumb{
+  margin-top:16px;
+  display:none;
+  border-radius:24px;
+  overflow:hidden;
+  border:1px solid var(--line);
+  background:#fff;
+}
+.preview-thumb.show{display:block}
+.preview-thumb img{
+  width:100%;
+  height:300px;
+  display:block;
+  object-fit:contain;
+  background:
+    linear-gradient(45deg,rgba(24,34,44,.04) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.04) 75%),
+    linear-gradient(45deg,rgba(24,34,44,.04) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.04) 75%);
+  background-position:0 0,14px 14px;
+  background-size:28px 28px;
+}
+.panel-title{
+  font-size:13px;
+  text-transform:uppercase;
+  letter-spacing:.14em;
+  color:var(--muted);
+}
+.selected-tool{
+  margin-top:12px;
+  border-radius:24px;
+  padding:16px;
+  background:linear-gradient(180deg,#fff5e7,#ffedd8);
+  border:1px solid rgba(255,107,53,.18);
+}
+.selected-tool strong{
+  display:block;
+  font-size:18px;
+}
+.selected-tool span{
+  display:block;
+  margin-top:8px;
+  font-size:13px;
+  color:var(--muted);
+  line-height:1.6;
+}
+.options{
+  margin-top:14px;
+  display:none;
+  border-radius:22px;
+  padding:16px;
+  background:#fff;
+  border:1px solid var(--line);
+}
+.options.show{display:block}
+.options-note{
+  font-size:12px;
+  line-height:1.65;
+  color:var(--muted);
+  margin-bottom:12px;
+}
+.compute-note{
+  margin-top:-4px;
+  margin-bottom:12px;
+  font-size:12px;
+  line-height:1.6;
+  color:var(--muted);
+}
+.options label{
+  display:block;
+  margin-bottom:6px;
+  font-size:12px;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  color:var(--muted);
+}
+.options select,.options input[type=range]{
+  width:100%;
+  margin-bottom:12px;
+}
+.options select{
+  padding:11px 13px;
+  border-radius:16px;
+  border:1px solid var(--line);
+  background:#fffdf7;
+  color:var(--ink);
+  font:inherit;
+}
+.options input[type=range]{
+  appearance:none;
+  height:8px;
+  border-radius:999px;
+  background:linear-gradient(90deg,var(--accent),#ffd166);
+  outline:none;
+}
+.options input[type=range]::-webkit-slider-thumb{
+  appearance:none;
+  width:18px;
+  height:18px;
+  border-radius:50%;
+  background:var(--deep);
+  border:3px solid #fff;
+  box-shadow:0 4px 12px rgba(0,0,0,.18);
+}
+.range-val{
+  float:right;
+  color:var(--accent-2);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:12px;
+}
+.process-btn{
+  width:100%;
+  margin-top:12px;
+  padding:15px 16px;
+  border-radius:18px;
+  background:linear-gradient(135deg,var(--accent),#ff9467);
+  color:#fff;
+  font-weight:700;
+  box-shadow:0 14px 28px rgba(255,107,53,.22);
+}
+.process-btn:disabled{
+  background:#decdb7;
+  box-shadow:none;
+  cursor:not-allowed;
+  color:#8d7e6e;
+}
+.progress-section{
+  display:none;
+  margin-top:14px;
+  border-radius:22px;
+  padding:16px;
+  background:linear-gradient(180deg,#fff7ec,#fff1df);
+  border:1px solid rgba(255,107,53,.16);
+}
+.progress-section.show,.result-section.show{display:block}
+.progress-text{font-size:13px;color:var(--muted)}
+.progress-bar-track{
+  margin-top:10px;
+  height:10px;
+  border-radius:999px;
+  overflow:hidden;
+  background:rgba(24,34,44,.08);
+}
+.progress-bar-fill{
+  width:0;
+  height:100%;
+  background:linear-gradient(90deg,var(--accent),var(--accent-3),var(--accent-2));
+  transition:width .3s ease;
+}
+.result-section{display:none}
+.compare-shell{
+  border-radius:24px;
+  overflow:hidden;
+  border:1px solid var(--line);
+  background:#fff;
+}
+.compare-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 14px;
+  border-bottom:1px solid var(--line);
+  background:#fffaf2;
+  font-size:12px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.12em;
+}
+.compare-container{
+  position:relative;
+  aspect-ratio:16/10;
+  max-height:560px;
+  background:
+    linear-gradient(45deg,rgba(24,34,44,.04) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.04) 75%),
+    linear-gradient(45deg,rgba(24,34,44,.04) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.04) 75%),
+    #fff;
+  background-position:0 0,16px 16px;
+  background-size:32px 32px;
+}
+.compare-container img{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:contain;
+}
+.compare-container .after{clip-path:inset(0 0 0 50%)}
+.compare-slider{
+  position:absolute;
+  inset:0 auto 0 50%;
+  width:3px;
+  background:linear-gradient(180deg,var(--accent),var(--accent-2));
+  cursor:ew-resize;
+  z-index:5;
+}
+.compare-slider::after{
+  content:'⟷';
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  width:42px;
+  height:42px;
+  border-radius:50%;
+  display:grid;
+  place-items:center;
+  background:var(--paper);
+  color:var(--deep);
+  border:2px solid rgba(24,34,44,.12);
+  box-shadow:0 12px 24px rgba(0,0,0,.14);
+  font-size:14px;
+}
+.result-meta{
+  margin-top:14px;
+}
+.result-meta span{
+  padding:10px 12px;
+  border-radius:14px;
+  background:#fff;
+  border:1px solid var(--line);
+  font-size:12px;
+  color:var(--muted);
+}
+.result-meta strong{color:var(--deep)}
+.result-actions{margin-top:14px}
+.result-actions button{
+  padding:12px 16px;
+  border-radius:18px;
+  background:#fff;
+  color:var(--deep);
+  border:1px solid var(--line);
+}
+.result-actions .dl-btn{
+  background:linear-gradient(135deg,var(--accent-2),#159a90);
+  color:#fff;
+  border:none;
+}
+.history{
+  margin-top:18px;
+  padding:18px;
+}
+.history-list{display:grid;gap:10px;margin-top:14px}
+.history-item{
+  border:1px solid var(--line);
+  border-radius:20px;
+  padding:14px 16px;
+  background:linear-gradient(180deg,#fffdf9,#fff8ef);
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto auto auto;
+  gap:12px;
+  align-items:center;
+}
+.history-item .hi-tool{
+  width:42px;
+  height:42px;
+  border-radius:14px;
+  display:grid;
+  place-items:center;
+  background:#fff;
+  border:1px solid var(--line);
+  font-size:20px;
+}
+.history-item .hi-name{
+  font-weight:500;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.history-item .hi-status{
+  font-size:11px;
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  padding:7px 10px;
+  border-radius:999px;
+}
+.hi-status.completed{background:rgba(15,157,88,.1);color:var(--success)}
+.hi-status.error{background:rgba(209,67,67,.1);color:var(--danger)}
+.hi-status.processing,.hi-status.queued{background:rgba(199,125,16,.12);color:var(--warn)}
+.history-item .hi-time{
+  font-size:12px;
+  color:var(--muted);
+}
+.history-item .hi-del{
+  appearance:none;
+  border:none;
+  width:34px;
+  height:34px;
+  border-radius:12px;
+  background:#fff;
+  border:1px solid var(--line);
+  color:var(--muted);
+  cursor:pointer;
+}
+.history-item .hi-del:hover{color:var(--danger);border-color:rgba(209,67,67,.25)}
+.empty{
+  border:1px dashed var(--line);
+  border-radius:22px;
+  padding:28px;
+  text-align:center;
+  color:var(--muted);
+  font-size:13px;
+  background:#fffdf9;
+}
+@media(max-width:1120px){
+  .hero{grid-template-columns:1fr}
+  .main{grid-template-columns:1fr}
+  .sidebar{position:static}
+  .studio-grid{grid-template-columns:1fr}
+}
+@media(max-width:780px){
+  .shell{padding:14px}
+  .masthead,.hero-side,.sidebar,.studio,.history{border-radius:24px}
+  .studio-head{grid-template-columns:1fr}
+  .studio-state{justify-items:start}
+  .history-item{grid-template-columns:auto minmax(0,1fr);align-items:start}
+  .history-item .hi-status,.history-item .hi-time,.history-item .hi-del{justify-self:start}
+}
+</style></head><body>
+<div class="shell">
+  <section class="hero">
+    <div class="masthead">
+      <div class="eyebrow"><span>RTX Workflow</span><span>Image Lab</span></div>
+      <h1>ML Image Studio</h1>
+      <p>High-end image cleanup and enhancement on your 3090 Ti. Every adjustable tool starts at its max-quality setting, and you can dial it back only when you want faster turnaround.</p>
+      <div class="hero-badges">
+        <div class="badge" id="gpuBadge"><span class="dot"></span><span id="gpuName">Checking GPU...</span></div>
+        <div class="badge"><span>6 tools</span><span class="mono">/process</span></div>
+        <div class="badge"><span>100 MB max upload</span></div>
+      </div>
+      <div class="hero-actions">
+        <button class="primary" onclick="document.getElementById('workspace').scrollIntoView({behavior:'smooth',block:'start'})">Open Workspace</button>
+        <button class="secondary" onclick="loadHistory()">Refresh History</button>
+      </div>
+    </div>
+    <div class="hero-side">
+      <div class="hero-card kicker">
+        <h2>Quality Mode</h2>
+        <div class="big">Max by Default</div>
+        <p>Upscale starts at 4x. Colorization starts at render factor 45. Denoising starts at strength 30.</p>
+      </div>
+      <div class="hero-card">
+        <h2>Selected Tool</h2>
+        <div class="big" id="selectedToolHero">Pick a tool</div>
+        <p id="selectedToolHeroDesc">Choose one of the studio tools to unlock the workspace, upload an image, and process it with the current best-quality defaults.</p>
+      </div>
+      <div class="hero-card">
+        <h2>Output Flow</h2>
+        <div class="tool-stats">
+          <span>Upload image</span>
+          <span>Adjust only if needed</span>
+          <span>Compare before/after</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="main">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h3>Tool Shelf</h3>
+        <p>Each tool is tuned for quality first. Select one to configure the workspace.</p>
+      </div>
+      <div class="tools" id="toolGrid"></div>
+      <div class="sidebar-note">
+        <strong>Tip</strong>
+        <p>For transparent exports, use background removal. For cleanup before upscaling, denoise first, then run a second pass with super-resolution.</p>
+      </div>
+    </aside>
+
+    <section class="studio" id="workspace">
+      <div class="studio-head">
+        <div class="studio-copy">
+          <h2 id="toolTitle">Select a tool to begin</h2>
+          <p id="toolDescription">The workspace opens when you pick a tool. Upload a file, keep the defaults if you want the best result, and process it on the GPU.</p>
+        </div>
+        <div class="studio-state">
+          <div class="studio-chip"><span>Service</span><span class="mono">:8008</span></div>
+          <div class="studio-chip"><span>Defaults</span><span id="toolDefaultLabel">Max quality ready</span></div>
+          <div class="studio-chip"><span>Compute</span><strong id="computeHeroLabel">Standard</strong></div>
+        </div>
+      </div>
+
+      <div class="studio-grid">
+        <div class="stage">
+          <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="upload-mark">↑</div>
+            <h3>Drop an image into the studio</h3>
+            <p id="uploadCopy">PNG, JPG, WebP, BMP, TIFF. Max 100 MB. The original stays visible so you can compare it against the generated result.</p>
+            <input type="file" id="fileInput" accept="image/*">
+          </div>
+          <div class="preview-thumb" id="previewThumb"><img id="previewImg" alt="Input preview"></div>
+
+          <div class="progress-section" id="progressSection">
+            <div class="progress-text" id="progressText">Queued...</div>
+            <div class="progress-bar-track"><div class="progress-bar-fill" id="progressBar"></div></div>
+          </div>
+
+          <div class="result-section" id="resultSection">
+            <div class="compare-shell">
+              <div class="compare-header"><span>Before</span><span>Live compare</span><span>After</span></div>
+              <div class="compare-container" id="compareBox">
+                <img id="beforeImg" class="before" alt="Before image">
+                <img id="afterImg" class="after" alt="After image">
+                <div class="compare-slider" id="compareSlider"></div>
+              </div>
+            </div>
+            <div class="result-meta" id="resultMeta"></div>
+            <div class="result-actions">
+              <button onclick="downloadResult()" class="dl-btn">Download Result</button>
+              <button onclick="resetWorkspace()">Process Another</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-panel">
+          <div class="panel-title">Session</div>
+          <div class="selected-tool">
+            <strong id="selectedToolName">No tool selected</strong>
+            <span id="selectedToolDesc">Pick a tool from the left to load its controls here.</span>
+          </div>
+          <div class="options" id="optionsPanel"></div>
+          <button class="process-btn" id="processBtn" disabled onclick="startProcess()">Select a tool first</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <section class="history">
+    <div class="history-head">
+      <div>
+        <h2>Recent Jobs</h2>
+        <p>Your last outputs stay here for quick redownload or cleanup.</p>
+      </div>
+    </div>
+    <div class="history-list" id="historyList"><div class="empty">No jobs yet</div></div>
+  </section>
+</div>
+
+<script>
+const TOOLS={
+  'remove-bg':{icon:'✂️',name:'Background Removal',desc:'Remove the background and export a transparent PNG.',defaults:'Transparent PNG output with optional extra matting refinement.'},
+  'upscale':{icon:'🔍',name:'Super-Resolution',desc:'Increase resolution with Real-ESRGAN detail generation.',defaults:'Defaults to 4x for max quality. Extra compute switches to heavier precision.'},
+  'style-transfer':{icon:'🎨',name:'Style Transfer',desc:'Apply a fast artistic style model to a photo.',defaults:'Starts with the Candy preset. Compute allocation has limited effect here.'},
+  'colorize':{icon:'🌈',name:'Colorization',desc:'Restore color to black-and-white or faded imagery.',defaults:'Starts at render factor 45. Compute allocation has limited effect here.'},
+  'restore-face':{icon:'👤',name:'Face Restoration',desc:'Enhance facial detail with GFPGAN restoration.',defaults:'Extra compute enables background upsampling and stronger restoration.'},
+  'denoise':{icon:'✨',name:'Denoising',desc:'Suppress visible grain and color noise.',defaults:'Starts at strength 30. Extra compute uses larger denoising windows.'}
+};
+
+let selectedTool=null, selectedFile=null, currentJobId=null, pollTimer=null;
+
+function init(){
+  renderTools();
+  loadHealth();
+  loadHistory();
+  setupDragDrop();
+  setupCompareSlider();
+}
+
+function renderTools(){
+  const grid=document.getElementById('toolGrid');
+  grid.innerHTML=Object.entries(TOOLS).map(([key,tool],index)=>`
+    <div class="tool-card" data-tool="${key}" onclick="selectTool('${key}')">
+      <div class="tool-top">
+        <div class="tool-icon">${tool.icon}</div>
+        <div class="tool-index">Tool ${String(index+1).padStart(2,'0')}</div>
+      </div>
+      <div class="tool-name">${tool.name}</div>
+      <div class="tool-desc">${tool.desc}</div>
+    </div>
+  `).join('');
+}
+
+function selectTool(toolKey){
+  selectedTool=toolKey;
+  const tool=TOOLS[toolKey];
+  document.querySelectorAll('.tool-card').forEach(card=>card.classList.toggle('active',card.dataset.tool===toolKey));
+  document.getElementById('toolTitle').textContent=tool.name;
+  document.getElementById('toolDescription').textContent=tool.desc;
+  document.getElementById('selectedToolName').textContent=tool.name;
+  document.getElementById('selectedToolDesc').textContent=tool.defaults;
+  document.getElementById('selectedToolHero').textContent=tool.name;
+  document.getElementById('selectedToolHeroDesc').textContent=tool.desc;
+  document.getElementById('toolDefaultLabel').textContent=tool.defaults;
+  document.getElementById('computeHeroLabel').textContent='Standard';
+  document.getElementById('uploadCopy').textContent=`${tool.defaults} Upload an image to start processing.`;
+  renderOptions(toolKey);
+  updateProcessBtn();
+}
+
+function renderOptions(toolKey){
+  const panel=document.getElementById('optionsPanel');
+  let html='<div class="options-note">The quality controls below already start at their highest settings. Compute allocation is separate: it tells the service to spend more GPU or CPU time on task-specific refinement when supported.</div>';
+  html+=`<label>Compute Allocation</label>
+    <select id="opt-compute_allocation" onchange="syncComputeLabel(this.value)">
+      <option value="standard" selected>Standard</option>
+      <option value="high">High</option>
+      <option value="max">Max</option>
+    </select>
+    <div class="compute-note">High and Max have the strongest effect on background removal, upscaling, face restoration, and denoising.</div>`;
+  if(toolKey==='upscale'){
+    html+=`<label>Upscale Factor</label><select id="opt-scale"><option value="2">2x for speed</option><option value="4" selected>4x for quality</option></select>`;
+  }else if(toolKey==='style-transfer'){
+    html+=`<label>Style Preset</label><select id="opt-style"><option value="candy">Candy</option><option value="mosaic">Mosaic</option><option value="rain_princess">Rain Princess</option><option value="udnie">Udnie</option><option value="pointilism">Pointilism</option></select>`;
+  }else if(toolKey==='colorize'){
+    html+=`<label>Render Factor <span class="range-val" id="rfVal">45</span></label><input type="range" id="opt-render_factor" min="7" max="45" value="45" oninput="document.getElementById('rfVal').textContent=this.value">`;
+  }else if(toolKey==='denoise'){
+    html+=`<label>Strength <span class="range-val" id="dsVal">30</span></label><input type="range" id="opt-strength" min="1" max="30" value="30" oninput="document.getElementById('dsVal').textContent=this.value">`;
+  }
+  panel.innerHTML=html;
+  panel.classList.toggle('show',!!toolKey);
+}
+
+function syncComputeLabel(value){
+  const labels={standard:'Standard',high:'High',max:'Max'};
+  document.getElementById('computeHeroLabel').textContent=labels[value]||'Standard';
+}
+
+function setupDragDrop(){
+  const zone=document.getElementById('dropZone');
+  ['dragenter','dragover'].forEach(eventName=>zone.addEventListener(eventName,event=>{event.preventDefault();zone.classList.add('drag');}));
+  ['dragleave','drop'].forEach(eventName=>zone.addEventListener(eventName,event=>{event.preventDefault();zone.classList.remove('drag');}));
+  zone.addEventListener('drop',event=>{if(event.dataTransfer.files.length)handleFile(event.dataTransfer.files[0]);});
+  document.getElementById('fileInput').addEventListener('change',event=>{if(event.target.files.length)handleFile(event.target.files[0]);});
+}
+
+function handleFile(file){
+  selectedFile=file;
+  const reader=new FileReader();
+  reader.onload=event=>{
+    document.getElementById('previewImg').src=event.target.result;
+    document.getElementById('previewThumb').classList.add('show');
+  };
+  reader.readAsDataURL(file);
+  document.getElementById('uploadCopy').textContent=`Loaded ${file.name}. Keep the defaults for maximum quality, or tune the current tool before processing.`;
+  updateProcessBtn();
+}
+
+function updateProcessBtn(){
+  const button=document.getElementById('processBtn');
+  if(!selectedTool){button.disabled=true;button.textContent='Select a tool first';return;}
+  if(!selectedFile){button.disabled=true;button.textContent='Upload an image first';return;}
+  button.disabled=false;
+  button.textContent=`Process with ${TOOLS[selectedTool].name}`;
+}
+
+function startProcess(){
+  if(!selectedTool||!selectedFile)return;
+  const formData=new FormData();
+  formData.append('file',selectedFile);
+  formData.append('tool',selectedTool);
+  const computeSelect=document.getElementById('opt-compute_allocation');
+  if(computeSelect)formData.append('compute_allocation',computeSelect.value);
+
+  const optionElements={'upscale':'opt-scale','style-transfer':'opt-style','colorize':'opt-render_factor','denoise':'opt-strength'};
+  const optionNames={'upscale':'scale','style-transfer':'style','colorize':'render_factor','denoise':'strength'};
+  if(optionElements[selectedTool]){
+    const element=document.getElementById(optionElements[selectedTool]);
+    if(element)formData.append(optionNames[selectedTool],element.value);
+  }
+
+  document.getElementById('processBtn').disabled=true;
+  document.getElementById('processBtn').textContent='Processing...';
+  document.getElementById('resultSection').classList.remove('show');
+  document.getElementById('progressSection').classList.add('show');
+  document.getElementById('progressBar').style.width='5%';
+  document.getElementById('progressText').textContent='Uploading image to the studio...';
+
+  fetch('/process',{method:'POST',body:formData})
+    .then(response=>response.json())
+    .then(data=>{
+      if(data.error){showError(data.error);return;}
+      currentJobId=data.job_id;
+      pollStatus();
+    })
+    .catch(error=>showError(error.message));
+}
+
+function pollStatus(){
+  if(!currentJobId)return;
+  fetch(`/status/${currentJobId}`)
+    .then(response=>response.json())
+    .then(data=>{
+      const percent=Math.round((data.progress||0)*100);
+      document.getElementById('progressBar').style.width=percent+'%';
+      document.getElementById('progressText').textContent=data.progress_msg||data.status;
+      if(data.status==='completed'){
+        showResult();
+        loadHistory();
+      }else if(data.status==='error'){
+        showError(data.progress_msg||'Processing failed');
+        loadHistory();
+      }else{
+        pollTimer=setTimeout(pollStatus,800);
+      }
+    })
+    .catch(()=>{pollTimer=setTimeout(pollStatus,2000);});
+}
+
+function showResult(){
+  document.getElementById('progressSection').classList.remove('show');
+  document.getElementById('resultSection').classList.add('show');
+  document.getElementById('beforeImg').src=URL.createObjectURL(selectedFile);
+  document.getElementById('afterImg').src=`/preview/${currentJobId}?t=${Date.now()}`;
+  fetch(`/result/${currentJobId}`).then(response=>response.json()).then(data=>{
+    document.getElementById('resultMeta').innerHTML=`
+      <span>Input <strong>${data.input_width}x${data.input_height}</strong></span>
+      <span>Output <strong>${data.output_width}x${data.output_height}</strong></span>
+      <span>Size <strong>${(data.output_size/1024).toFixed(0)} KB</strong></span>
+      <span>Time <strong>${data.elapsed}s</strong></span>`;
+  });
+  document.getElementById('processBtn').disabled=false;
+  updateProcessBtn();
+}
+
+function showError(message){
+  document.getElementById('progressSection').classList.remove('show');
+  document.getElementById('progressText').textContent='Error: '+message;
+  document.getElementById('processBtn').disabled=false;
+  updateProcessBtn();
+  alert('Error: '+message);
+}
+
+function downloadResult(){
+  if(currentJobId)window.open(`/download/${currentJobId}`,'_blank');
+}
+
+function resetWorkspace(){
+  selectedFile=null;
+  currentJobId=null;
+  document.getElementById('previewThumb').classList.remove('show');
+  document.getElementById('resultSection').classList.remove('show');
+  document.getElementById('progressSection').classList.remove('show');
+  document.getElementById('fileInput').value='';
+  document.getElementById('uploadCopy').textContent=selectedTool?`${TOOLS[selectedTool].defaults} Upload an image to start processing.`:'PNG, JPG, WebP, BMP, TIFF. Max 100 MB. The original stays visible so you can compare it against the generated result.';
+  updateProcessBtn();
+}
+
+function setupCompareSlider(){
+  const slider=document.getElementById('compareSlider');
+  const box=document.getElementById('compareBox');
+  let dragging=false;
+  function move(x){
+    const rect=box.getBoundingClientRect();
+    const percent=Math.max(0,Math.min(1,(x-rect.left)/rect.width));
+    slider.style.left=(percent*100)+'%';
+    document.getElementById('afterImg').style.clipPath=`inset(0 0 0 ${percent*100}%)`;
+  }
+  slider.addEventListener('mousedown',()=>dragging=true);
+  document.addEventListener('mousemove',event=>{if(dragging)move(event.clientX);});
+  document.addEventListener('mouseup',()=>dragging=false);
+  slider.addEventListener('touchstart',()=>dragging=true);
+  document.addEventListener('touchmove',event=>{if(dragging)move(event.touches[0].clientX);});
+  document.addEventListener('touchend',()=>dragging=false);
+}
+
+function loadHealth(){
+  fetch('/health')
+    .then(response=>response.json())
+    .then(data=>{
+      const name=document.getElementById('gpuName');
+      const dot=document.querySelector('#gpuBadge .dot');
+      if(data.gpu){
+        name.textContent=data.gpu_name||'GPU Ready';
+        dot.style.background='var(--success)';
+      }else{
+        name.textContent='CPU Mode';
+        dot.style.background='var(--warn)';
+      }
+    })
+    .catch(()=>{document.getElementById('gpuName').textContent='Service offline';});
+}
+
+function loadHistory(){
+  fetch('/history?per_page=10').then(response=>response.json()).then(data=>{
+    const list=document.getElementById('historyList');
+    if(!data.jobs||!data.jobs.length){list.innerHTML='<div class="empty">No jobs yet</div>';return;}
+    list.innerHTML=data.jobs.map(job=>{
+      const tool=TOOLS[job.tool]||{icon:'📦',name:job.tool};
+      return `<div class="history-item">
+        <span class="hi-tool">${tool.icon}</span>
+        <span class="hi-name">${job.original_filename||'untitled'}</span>
+        <span class="hi-status ${job.status}">${job.status}</span>
+        <span class="hi-time">${timeAgo(job.created_at)}</span>
+        ${job.status==='completed'?`<button class="hi-del" onclick="window.open('/download/${job.id}','_blank')" title="Download">↓</button>`:''}
+        <button class="hi-del" onclick="deleteJob('${job.id}')" title="Delete">✕</button>
+      </div>`;
+    }).join('');
+  }).catch(()=>{});
+}
+
+function deleteJob(jobId){
+  fetch(`/delete/${jobId}`,{method:'DELETE'}).then(()=>loadHistory());
+}
+
+function timeAgo(iso){
+  if(!iso)return'';
+  const date=new Date(iso+'Z');
+  const now=new Date();
+  const seconds=Math.floor((now-date)/1000);
+  if(seconds<60)return'just now';
+  if(seconds<3600)return Math.floor(seconds/60)+'m ago';
+  if(seconds<86400)return Math.floor(seconds/3600)+'h ago';
+  return Math.floor(seconds/86400)+'d ago';
+}
+
+init();
+</script>
+</body></html>

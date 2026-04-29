@@ -47,5 +47,12 @@
     "port": 8007,
     "icon": "📊",
     "color": "#2ea043"
+  },
+  {
+    "name": "ML Image Studio",
+    "description": "GPU image editing · bg removal, upscale, style transfer",
+    "port": 8008,
+    "icon": "🖼️",
+    "color": "#7c3aed"
   }
 ]

@@ -29,6 +29,8 @@ from flask import (
     Flask, Response, jsonify, request, redirect, url_for, send_file, abort
 )
 
+from twitter_csv import identity_key_set, parse_csv_export_rows
+
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
@@ -300,9 +302,10 @@ def get_queue_stats(queue=None):
     }
 
 
-def _load_dedup_sets():
+def _load_dedup_sets(queue=None):
     """Load all three dedup sources: queue.json usernames, followed.csv, unfollowed.csv."""
-    queue = read_queue()
+    if queue is None:
+        queue = read_queue()
     queue_users = {e["username"].lower() for e in queue}
     queue_active = {e["username"].lower() for e in queue if e.get("status") in ("pending_follow",)}
     queue_completed = {e["username"].lower() for e in queue if e.get("status") in ("followed", "unfollowed", "skipped")}
@@ -334,6 +337,14 @@ def _load_dedup_sets():
             pass
 
     return queue_users, followed_users, unfollowed_users, queue_active, queue_completed
+
+
+def _queue_keys_for_statuses(queue, statuses):
+    keys = set()
+    for e in queue:
+        if e.get("status") in statuses:
+            keys |= identity_key_set(e.get("username"), e.get("user_id"))
+    return keys
 
 
 def get_history_stats():
@@ -400,70 +411,117 @@ def get_history_stats():
 
 def _parse_file_usernames(filename, content, username_col=None):
     """Extract usernames from a single file's content. Returns (list, error, columns_if_needed)."""
-    usernames = []
+    rows, err, cols = _parse_file_import_rows(filename, content, username_col)
+    if err:
+        return [], err, cols
+    usernames = [r["username"] for r in rows]
+    return usernames, None, cols
+
+
+def _parse_file_import_rows(filename, content, username_col=None):
+    """Extract import rows: {username, user_id?, followers_count?}. Returns (list, error, columns_if_needed)."""
+    content = content.lstrip("\ufeff")
     if filename and filename.lower().endswith(".txt"):
+        out = []
         for line in content.splitlines():
             u = line.strip().lstrip("@")
             if u and not u.startswith("#"):
-                usernames.append(u)
-        return usernames, None, None
-
-    content = content.lstrip("\ufeff")
+                out.append({"username": u.lower(), "user_id": "", "followers_count": None})
+        return out, None, None
 
     try:
+        if username_col:
+            reader = csv.DictReader(io.StringIO(content))
+            columns = reader.fieldnames or []
+            if username_col not in (columns or []):
+                return [], None, columns
+            out = []
+            for row in reader:
+                u = (row.get(username_col) or "").strip().lstrip("@")
+                if not u:
+                    continue
+                out.append({"username": u.lower(), "user_id": "", "followers_count": None})
+            return out, None, None
+
+        parsed = parse_csv_export_rows(content)
+        out = []
+        for row in parsed:
+            u = (row.get("username") or "").strip().lower()
+            uid = (row.get("user_id") or "").strip()
+            fc = row.get("followers_count")
+            if not u and uid:
+                u = uid
+            if not u:
+                continue
+            out.append({"username": u, "user_id": uid, "followers_count": fc})
+
+        if out:
+            return out, None, None
+
         reader = csv.DictReader(io.StringIO(content))
         columns = reader.fieldnames or []
         candidate_cols = ["screen_name", "username", "handle", "user", "twitter", "x_handle",
                           "user id", "user_id", "userid"]
         rows = list(reader)
 
-        if username_col and username_col in columns:
-            col = username_col
-        else:
-            col = None
-            for c in candidate_cols:
-                for fc in columns:
-                    if fc.lower().strip() == c:
-                        col = fc
-                        break
-                if col:
+        col = None
+        for c in candidate_cols:
+            for fc in columns or []:
+                if fc.lower().strip() == c:
+                    col = fc
                     break
+            if col:
+                break
 
         if col is None:
             return [], None, columns
 
+        out = []
         for row in rows:
             u = row.get(col, "").strip().lstrip("@")
             if u:
-                usernames.append(u)
+                out.append({"username": u.lower(), "user_id": "", "followers_count": None})
 
-        if not usernames and rows:
+        if not out and rows:
             for fallback in ["User ID", "user_id", "userid"]:
-                fc_match = next((fc for fc in columns if fc.lower().strip() == fallback.lower()), None)
+                fc_match = next((fc for fc in (columns or []) if fc.lower().strip() == fallback.lower()), None)
                 if fc_match and fc_match != col:
                     for row in rows:
                         u = row.get(fc_match, "").strip()
                         if u:
-                            usernames.append(u)
-                    if usernames:
-                        return usernames, None, None
+                            out.append({"username": u.lower(), "user_id": "", "followers_count": None})
+                    if out:
+                        return out, None, None
             return [], None, columns
 
-        return usernames, None, None
+        return out, None, None
     except Exception as e:
         return [], str(e), None
 
 
 def import_batch_to_queue(files_data, allow_requeue=False):
-    """Import multiple files' worth of usernames into the queue atomically.
-    files_data: list of {source_name, usernames}
+    """Import multiple files' worth of rows into the queue atomically.
+    files_data: list of {source_name, rows} where each row is {username, user_id?, followers_count?}
+    (legacy: {source_name, usernames} with str entries still supported)
     When allow_requeue=True, reset existing followed/unfollowed entries to pending_follow.
     """
     fd = _acquire_lock()
     try:
         queue = read_queue()
-        existing = {e["username"].lower() for e in queue}
-        existing_idx = {e["username"].lower(): i for i, e in enumerate(queue)}
+
+        def normalize_row(item):
+            if isinstance(item, str):
+                ul = item.lower().strip().lstrip("@")
+                return ul, "", None
+            ul = (item.get("username") or "").lower().strip().lstrip("@")
+            uid = (item.get("user_id") or "").strip()
+            fc = item.get("followers_count")
+            return ul, uid, fc
+
+        key_to_idx = {}
+        for i, e in enumerate(queue):
+            for k in identity_key_set(e.get("username"), e.get("user_id")):
+                key_to_idx.setdefault(k, i)
 
         imports = safe_read_json(_fpath("imports.json"), default=[])
         results = []
@@ -471,37 +529,56 @@ def import_batch_to_queue(files_data, allow_requeue=False):
 
         for fd_item in files_data:
             source_name = fd_item["source_name"]
-            usernames = fd_item["usernames"]
+            rows_in = fd_item.get("rows")
+            if rows_in is None:
+                rows_in = fd_item.get("usernames", [])
             added = 0
-            for u in usernames:
-                ul = u.lower().strip().lstrip("@")
+            for item in rows_in:
+                ul, uid, fc = normalize_row(item)
                 if not ul:
                     continue
-                if ul in existing:
-                    if allow_requeue and ul in existing_idx:
-                        entry = queue[existing_idx[ul]]
-                        if entry["status"] in ("followed", "unfollowed"):
-                            entry["status"] = "pending_follow"
-                            entry["source_list"] = source_name
-                            entry["added_at"] = datetime.now().isoformat()
-                            entry["timestamp"] = ""
-                            entry.pop("skip_reason", None)
-                            added += 1
+                rk = identity_key_set(ul, uid)
+                idx = None
+                for k in rk:
+                    if k in key_to_idx:
+                        idx = key_to_idx[k]
+                        break
+                if idx is not None:
+                    entry = queue[idx]
+                    if allow_requeue and entry.get("status") in ("followed", "unfollowed", "skipped"):
+                        entry["status"] = "pending_follow"
+                        entry["source_list"] = source_name
+                        entry["added_at"] = datetime.now().isoformat()
+                        entry["timestamp"] = ""
+                        entry.pop("skip_reason", None)
+                        if uid:
+                            entry["user_id"] = uid
+                        if fc is not None:
+                            entry["followers_count"] = fc
+                        added += 1
                     continue
-                queue.append({
+
+                new_e = {
                     "username": ul,
                     "source_list": source_name,
                     "added_at": datetime.now().isoformat(),
                     "status": "pending_follow",
                     "timestamp": "",
-                })
-                existing.add(ul)
+                }
+                if uid:
+                    new_e["user_id"] = uid
+                if fc is not None:
+                    new_e["followers_count"] = fc
+                queue.append(new_e)
+                ni = len(queue) - 1
+                for k in identity_key_set(ul, uid):
+                    key_to_idx[k] = ni
                 added += 1
 
             imports.append({
                 "date": datetime.now().isoformat(),
                 "source_name": source_name,
-                "total_in_file": len(usernames),
+                "total_in_file": len(rows_in),
                 "added": added,
             })
             results.append({"source_name": source_name, "added": added})
@@ -621,10 +698,13 @@ def api_queue_import():
         except Exception:
             pass
 
-    queue_users, followed_users, unfollowed_users, queue_active, queue_completed = _load_dedup_sets()
+    queue = read_queue()
+    queue_users, followed_users, unfollowed_users, queue_active, queue_completed = _load_dedup_sets(queue)
+    pending_keys = _queue_keys_for_statuses(queue, ("pending_follow",))
+    completed_keys = _queue_keys_for_statuses(queue, ("followed", "unfollowed", "skipped"))
 
     all_files_data = []
-    cross_dedup = set()
+    cross_batch_keys = set()
     needs_column = False
     needs_column_info = None
 
@@ -633,9 +713,9 @@ def api_queue_import():
         content = f.read().decode("utf-8", errors="replace")
         source_name = source_map.get(fname, fname.rsplit(".", 1)[0] if "." in fname else fname)
 
-        usernames, err, columns = _parse_file_usernames(fname, content, username_col)
+        rows, err, columns = _parse_file_import_rows(fname, content, username_col)
 
-        if columns is not None and not usernames:
+        if columns is not None and not rows:
             needs_column = True
             needs_column_info = {"filename": fname, "columns": columns, "needs_column_selection": True}
             break
@@ -651,62 +731,62 @@ def api_queue_import():
         file_cross_dup = 0
         file_requeued = 0
 
-        for u in usernames:
-            ul = u.lower().strip().lstrip("@")
-            if not ul:
-                continue
-            if ul in cross_dedup:
-                per_user.append({"username": ul, "status": "duplicate_across_uploads"})
+        for row in rows:
+            ul = row["username"]
+            uid = row.get("user_id") or ""
+            rk = identity_key_set(ul, uid)
+
+            if rk & cross_batch_keys:
+                per_user.append({"username": ul, "status": "duplicate_across_uploads", "row": row})
                 file_cross_dup += 1
-            elif ul in queue_active:
-                per_user.append({"username": ul, "status": "already_in_queue"})
+                continue
+
+            if rk & pending_keys:
+                per_user.append({"username": ul, "status": "already_in_queue", "row": row})
                 file_in_queue += 1
-            elif ul in queue_completed and allow_requeue:
-                per_user.append({"username": ul, "status": "requeue"})
-                file_requeued += 1
-                cross_dedup.add(ul)
-            elif ul in queue_users:
-                if not allow_requeue:
-                    per_user.append({"username": ul, "status": "already_in_queue"})
-                    file_in_queue += 1
-                else:
-                    per_user.append({"username": ul, "status": "requeue"})
+            elif rk & completed_keys:
+                if allow_requeue:
+                    per_user.append({"username": ul, "status": "requeue", "row": row})
                     file_requeued += 1
-                    cross_dedup.add(ul)
+                    cross_batch_keys |= rk
+                else:
+                    per_user.append({"username": ul, "status": "already_in_queue", "row": row})
+                    file_in_queue += 1
             elif ul in followed_users:
                 if allow_requeue:
-                    per_user.append({"username": ul, "status": "requeue"})
+                    per_user.append({"username": ul, "status": "requeue", "row": row})
                     file_requeued += 1
-                    cross_dedup.add(ul)
+                    cross_batch_keys |= rk
                 else:
-                    per_user.append({"username": ul, "status": "already_followed"})
+                    per_user.append({"username": ul, "status": "already_followed", "row": row})
                     file_followed += 1
             elif ul in unfollowed_users:
                 if allow_requeue:
-                    per_user.append({"username": ul, "status": "requeue"})
+                    per_user.append({"username": ul, "status": "requeue", "row": row})
                     file_requeued += 1
-                    cross_dedup.add(ul)
+                    cross_batch_keys |= rk
                 else:
-                    per_user.append({"username": ul, "status": "already_unfollowed"})
+                    per_user.append({"username": ul, "status": "already_unfollowed", "row": row})
                     file_unfollowed += 1
             else:
-                per_user.append({"username": ul, "status": "new"})
+                per_user.append({"username": ul, "status": "new", "row": row})
                 file_new += 1
-                cross_dedup.add(ul)
+                cross_batch_keys |= rk
 
-        importable = [pu["username"] for pu in per_user if pu["status"] in ("new", "requeue")]
+        import_rows = [pu["row"] for pu in per_user if pu["status"] in ("new", "requeue")]
+        preview_usernames = [r["username"] for r in rows]
         all_files_data.append({
             "filename": fname,
             "source_name": source_name,
-            "usernames_raw": importable,
-            "total_in_file": len(usernames),
+            "import_rows": import_rows,
+            "total_in_file": len(rows),
             "new": file_new,
             "requeued": file_requeued,
             "already_in_queue": file_in_queue,
             "already_followed": file_followed,
             "already_unfollowed": file_unfollowed,
             "duplicate_across": file_cross_dup,
-            "preview": [u[:20] for u in usernames[:8]],
+            "preview": [u[:20] for u in preview_usernames[:8]],
         })
 
     if needs_column:
@@ -717,7 +797,7 @@ def api_queue_import():
         combined_requeued = sum(fd["requeued"] for fd in all_files_data)
         combined_importable = combined_new + combined_requeued
         return jsonify({
-            "files": [{k: v for k, v in fd.items() if k != "usernames_raw"} for fd in all_files_data],
+            "files": [{k: v for k, v in fd.items() if k != "import_rows"} for fd in all_files_data],
             "combined_new": combined_new,
             "combined_requeued": combined_requeued,
             "combined_importable": combined_importable,
@@ -726,7 +806,7 @@ def api_queue_import():
             "committed": False,
         })
 
-    batch = [{"source_name": fd["source_name"], "usernames": fd["usernames_raw"]} for fd in all_files_data]
+    batch = [{"source_name": fd["source_name"], "rows": fd["import_rows"]} for fd in all_files_data]
     result = import_batch_to_queue(batch, allow_requeue=allow_requeue)
     result["committed"] = True
     return jsonify(result)
@@ -772,8 +852,8 @@ def api_queue_sources():
             "done": done,
             "pct": pct,
         })
-    # Sort to match bot's processing order: smallest pending-count first
-    # (bot sorts sources by len(pending_users) ascending at twitter_bot.py line 2905).
+    # Sort to roughly match bot priority: sources with fewer pending rows surface first
+    # (see queue_dedupe.entry_rank_tuple — smallest source list first).
     # Completed lists (0 pending) drop to the bottom so active work is visible at top.
     result.sort(key=lambda x: (x["pending"] == 0, x["pending"], x["total"]))
     return jsonify({"sources": result})

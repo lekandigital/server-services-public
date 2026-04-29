@@ -83,7 +83,7 @@ echo -e "${GREEN}  ✓ System packages installed${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[2/7] Copying service files to ${INSTALL_DIR}...${NC}"
 mkdir -p "$INSTALL_DIR"
-cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,cast-manager,whisper-transcriber,ocr-engine,system-stats,ollama-gui} "$INSTALL_DIR/"
+cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,cast-manager,whisper-transcriber,ocr-engine,system-stats,ollama-gui,image-studio} "$INSTALL_DIR/"
 chown -R "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
 echo -e "${GREEN}  ✓ Files copied${NC}"
 
@@ -92,7 +92,7 @@ echo -e "${GREEN}  ✓ Files copied${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[3/7] Installing Python dependencies...${NC}"
 
-for svc in server-portal whisper-transcriber ocr-engine system-stats twitter-bot; do
+for svc in server-portal whisper-transcriber ocr-engine system-stats twitter-bot image-studio; do
     if [ -f "$INSTALL_DIR/$svc/requirements.txt" ]; then
         echo -e "  ${BLUE}→ $svc${NC}"
         pip3 install -q -r "$INSTALL_DIR/$svc/requirements.txt"
@@ -133,6 +133,7 @@ declare -A SERVICE_FILES=(
     ["faster-whisper"]="whisper-transcriber/faster-whisper.service"
     ["paddleocr"]="ocr-engine/paddleocr.service"
     ["system-stats"]="system-stats/system-stats.service"
+    ["image-studio"]="image-studio/image-studio.service"
 )
 
 for svc_name in "${!SERVICE_FILES[@]}"; do
@@ -155,7 +156,7 @@ echo -e "${GREEN}  ✓ Systemd services installed${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[7/7] Enabling and starting services...${NC}"
 
-for svc_name in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats; do
+for svc_name in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio; do
     systemctl enable "$svc_name" 2>/dev/null
     systemctl start "$svc_name" 2>/dev/null && \
         echo -e "  ${GREEN}✓ ${svc_name}${NC}" || \
@@ -177,6 +178,7 @@ echo -e "  🎬 Video Manager:        http://$(hostname -I | awk '{print $1}'):8
 echo -e "  🎙️  Whisper Transcriber:  http://$(hostname -I | awk '{print $1}'):8005"
 echo -e "  🔍 OCR Engine:           http://$(hostname -I | awk '{print $1}'):8006"
 echo -e "  📊 System Stats:         http://$(hostname -I | awk '{print $1}'):8007"
+echo -e "  🖼️  ML Image Studio:     http://$(hostname -I | awk '{print $1}'):8008"
 echo ""
-echo -e "  Check status: ${YELLOW}sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats${NC}"
+echo -e "  Check status: ${YELLOW}sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio${NC}"
 echo -e "  View logs:    ${YELLOW}journalctl -u <service-name> -f${NC}"
