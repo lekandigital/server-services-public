@@ -8,7 +8,7 @@ The project includes a `compose.yml` that runs both the Ollama GUI and an Ollama
 
 | Service      | Container       | Host Port | Container Port | Description            |
 |--------------|-----------------|-----------|----------------|------------------------|
-| ollama-gui   | ollama_gui      | 8081      | 80             | Nginx serving the Vue app |
+| ollama-gui   | ollama_gui      | 8002      | 80             | Nginx serving the Vue app |
 | ollama       | ollama          | 11435     | 11434          | Ollama LLM server      |
 
 ### Starting Up
@@ -17,7 +17,7 @@ The project includes a `compose.yml` that runs both the Ollama GUI and an Ollama
 docker compose up -d
 ```
 
-The GUI is available at **http://localhost:8081**.
+The GUI is available at **http://localhost:8002**.
 
 ### Rebuilding After Code Changes
 

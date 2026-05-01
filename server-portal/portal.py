@@ -177,6 +177,21 @@ def _systemctl(action, service_name):
         return False, str(e)
 
 
+def _docker_compose(action, path):
+    """Run docker compose start/stop in a directory. Returns (success, message)."""
+    try:
+        result = subprocess.run(
+            ["docker", "compose", action],
+            cwd=path,
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return True, f"{action} docker compose succeeded"
+        return False, result.stderr.strip() or f"{action} failed (exit {result.returncode})"
+    except Exception as e:
+        return False, str(e)
+
+
 # ============================================================
 # API ROUTES
 # ============================================================
@@ -228,7 +243,13 @@ def api_toggle(port):
         return jsonify({"error": "no systemd service mapped for this port"}), 400
     online = check_port(port)
     action = "stop" if online else "start"
-    ok, msg = _systemctl(action, svc)
+    
+    if svc == "ollama":
+        # Ollama is managed via Docker Compose
+        ok, msg = _docker_compose(action, "/home/REDACTED_USER/ollama-gui")
+    else:
+        ok, msg = _systemctl(action, svc)
+        
     return jsonify({"ok": ok, "action": action, "message": msg, "port": port})
 
 

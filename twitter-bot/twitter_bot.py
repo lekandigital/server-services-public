@@ -665,7 +665,7 @@ def follow_user(driver, username, like_limiter):
             if liked_count > 0:
                 print(f"💝 Bonus: Liked {liked_count} posts during follow")
             
-            print(f"📝 @{username} followed; will unfollow after 4 days")
+            print(f"📝 @{username} followed; will unfollow after 3 days")
             return True
         else:
             print(f"❌ No suitable follow button found for @{username}")
@@ -2919,12 +2919,13 @@ def main():
                 print(f"📊 Current following difference: {current_difference}")
                 print(f"📊 Today's activity: F:{activity_tracker['follows_today']}/{follow_limiter.daily_limit} U:{activity_tracker['unfollows_today']}/{unfollow_limiter.daily_limit} L:{activity_tracker['likes_today']}/{like_limiter.daily_limit}")
 
-                # UNFOLLOW LOGIC - Prioritize if above 476 following difference
-                above_threshold = current_difference > 476
+                # UNFOLLOW LOGIC - Prioritize if above 430 following difference
+                # 430 = ~370 organic gap + 60 bot headroom  (keeps following/followers ≤ ~1.3)
+                above_threshold = current_difference > 430
                 
                 if unfollow_limiter.can_perform() and not followed_not_unfollowed.empty:
-                    # 4-day minimum before unfollowing
-                    cutoff = datetime.now() - timedelta(days=4)
+                    # 3-day minimum before unfollowing (tighter cap → faster slot reclaim)
+                    cutoff = datetime.now() - timedelta(days=3)
                     eligible_unfollows = followed_not_unfollowed[
                         followed_not_unfollowed["follow_timestamp"] < cutoff
                     ].sort_values("follow_timestamp", ascending=True)
@@ -2965,7 +2966,7 @@ def main():
                             smart_break(recent_activity_count, base_minutes=3)
 
                 # FOLLOW LOGIC - Only if not too far above threshold AND not in unfollow-only mode
-                can_follow = current_difference < 500 and not unfollow_only_mode  # Allow some buffer above 476
+                can_follow = current_difference < 455 and not unfollow_only_mode  # Allow some buffer above 430
                 
                 if can_follow and follow_limiter.can_perform():
                     # usernames is already filtered (no followed, no unfollowed, no multi-list dupes)
@@ -3035,7 +3036,7 @@ def main():
                     elif above_threshold and eligible_unfollows.empty:
                         wait_time = random.uniform(10*60, 20*60)  # 10-20 min wait when above threshold
                         print(f"🚨 Above threshold but no eligible unfollows. Waiting {round(wait_time/60, 1)} min")
-                    elif current_difference >= 450:  # Approaching threshold
+                    elif current_difference >= 405:  # Approaching threshold
                         wait_time = random.uniform(5*60, 10*60)   # 5-10 min wait
                         print(f"⚠️ Approaching threshold. Waiting {round(wait_time/60, 1)} min")
                     else:
