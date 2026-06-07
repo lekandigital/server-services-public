@@ -492,6 +492,46 @@ body::before{
   transition:width .3s ease;
 }
 .result-section{display:none}
+.result-simple{
+  display:none;
+  border-radius:24px;
+  overflow:hidden;
+  border:1px solid var(--line);
+  background:#fff;
+}
+.result-simple.show{display:block}
+.result-simple-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 14px;
+  border-bottom:1px solid var(--line);
+  background:#fffaf2;
+  font-size:12px;
+  color:var(--muted);
+  text-transform:uppercase;
+  letter-spacing:.12em;
+}
+.result-simple-body{
+  position:relative;
+  max-height:560px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:
+    linear-gradient(45deg,rgba(24,34,44,.06) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.06) 75%),
+    linear-gradient(45deg,rgba(24,34,44,.06) 25%,transparent 25%,transparent 75%,rgba(24,34,44,.06) 75%),
+    #fff;
+  background-position:0 0,16px 16px;
+  background-size:32px 32px;
+  padding:16px;
+}
+.result-simple-body img{
+  max-width:100%;
+  max-height:528px;
+  object-fit:contain;
+}
 .compare-shell{
   border-radius:24px;
   overflow:hidden;
@@ -741,7 +781,11 @@ body::before{
           </div>
 
           <div class="result-section" id="resultSection">
-            <div class="compare-shell">
+            <div class="result-simple" id="resultSimple">
+              <div class="result-simple-header"><span>Background Removed</span><span>Transparent PNG</span></div>
+              <div class="result-simple-body"><img id="simpleResultImg" alt="Result"></div>
+            </div>
+            <div class="compare-shell" id="compareShell">
               <div class="compare-header"><span>Before</span><span>Live compare</span><span>After</span></div>
               <div class="compare-container" id="compareBox">
                 <img id="beforeImg" class="before" alt="Before image">
@@ -994,8 +1038,18 @@ function pollStatus(){
 function showResult(){
   document.getElementById('progressSection').classList.remove('show');
   document.getElementById('resultSection').classList.add('show');
-  document.getElementById('beforeImg').src=URL.createObjectURL(selectedFile);
-  document.getElementById('afterImg').src=`/preview/${currentJobId}?t=${Date.now()}`;
+  const isBgRemoval=selectedTool==='remove-bg';
+  const resultUrl=`/preview/${currentJobId}?t=${Date.now()}`;
+  if(isBgRemoval){
+    document.getElementById('resultSimple').classList.add('show');
+    document.getElementById('compareShell').style.display='none';
+    document.getElementById('simpleResultImg').src=resultUrl;
+  }else{
+    document.getElementById('resultSimple').classList.remove('show');
+    document.getElementById('compareShell').style.display='';
+    document.getElementById('beforeImg').src=URL.createObjectURL(selectedFile);
+    document.getElementById('afterImg').src=resultUrl;
+  }
   fetch(`/result/${currentJobId}`).then(response=>response.json()).then(data=>{
     document.getElementById('resultMeta').innerHTML=`
       <span>Input <strong>${data.input_width}x${data.input_height}</strong></span>
@@ -1025,6 +1079,8 @@ function resetWorkspace(){
   document.getElementById('previewThumb').classList.remove('show');
   document.getElementById('resultSection').classList.remove('show');
   document.getElementById('progressSection').classList.remove('show');
+  document.getElementById('resultSimple').classList.remove('show');
+  document.getElementById('compareShell').style.display='';
   document.getElementById('fileInput').value='';
   document.getElementById('uploadCopy').textContent=selectedTool?`${TOOLS[selectedTool].defaults} Upload an image to start processing.`:'PNG, JPG, WebP, BMP, TIFF. Max 100 MB. The original stays visible so you can compare it against the generated result.';
   updateProcessBtn();
