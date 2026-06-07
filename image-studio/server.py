@@ -4,12 +4,20 @@
 All tools default to maximum quality settings.
 
 Tools:
-  1. Background Removal  (rembg / U²-Net)
+  1. Background Removal  (BiRefNet / BRIA RMBG / BEN2 / legacy rembg)
   2. Super-Resolution     (Real-ESRGAN)
   3. Style Transfer        (PyTorch Neural Style Transfer)
   4. Colorization          (DeOldify)
   5. Face Restoration      (GFPGAN)
   6. Denoising             (SCUNet)
+
+Background removal models (selectable via bg_model):
+  - birefnet-hr-matting  : ZhengPeng7/BiRefNet_HR-matting  (MIT)
+  - birefnet-dynamic     : ZhengPeng7/BiRefNet_dynamic     (MIT)
+  - bria-rmbg-2          : briaai/RMBG-2.0  (non-commercial HF weights)
+  - ben2                 : PramaLLC/BEN2     (MIT base, optional)
+  - birefnet-general     : ZhengPeng7/BiRefNet (MIT)
+  - legacy-rembg         : rembg / U²-Net    (MIT)
 """
 
 import argparse
@@ -49,7 +57,7 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "bmp", "tiff"}
 MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB
 
 TOOLS = {
-    "remove-bg": {"name": "Background Removal", "icon": "✂️", "desc": "Remove image backgrounds with AI"},
+    "remove-bg": {"name": "Background Removal", "icon": "✂️", "desc": "Remove image backgrounds with multiple local CUDA backends"},
     "upscale": {"name": "Super-Resolution", "icon": "🔍", "desc": "2×/4× AI upscaling with Real-ESRGAN"},
     "style-transfer": {"name": "Style Transfer", "icon": "🎨", "desc": "Apply artistic styles to photos"},
     "colorize": {"name": "Colorization", "icon": "🌈", "desc": "Auto-colorize black & white photos"},
@@ -81,12 +89,83 @@ COMPUTE_ALLOCATIONS = {
 }
 
 DEFAULT_OPTIONS = {
-    "remove-bg": {"compute_allocation": "standard"},
+    "remove-bg": {
+        "compute_allocation": "high",
+        "bg_model": "birefnet-dynamic",
+        "bg_refinement": "auto",
+        "bg_resolution_mode": "auto",
+    },
     "upscale": {"scale": 4, "compute_allocation": "standard"},
     "style-transfer": {"style": "candy", "compute_allocation": "standard"},
     "colorize": {"render_factor": 45, "compute_allocation": "standard"},
     "restore-face": {"compute_allocation": "standard"},
     "denoise": {"strength": 30, "compute_allocation": "standard"},
+}
+
+# ---------------------------------------------------------------------------
+# Background Removal — Model Registry
+# ---------------------------------------------------------------------------
+BACKGROUND_MODELS = {
+    "birefnet-hr-matting": {
+        "label": "BiRefNet HR Matting \u2014 best edges / slow",
+        "hf_model_id": "ZhengPeng7/BiRefNet_HR-matting",
+        "license_note": "MIT",
+        "default_resolution": 1024,
+        "max_resolution": 2048,
+        "supports_heavy": True,
+        "force_square": True,
+        "optional": False,
+    },
+    "birefnet-dynamic": {
+        "label": "BiRefNet Dynamic \u2014 adaptive general",
+        "hf_model_id": "ZhengPeng7/BiRefNet_dynamic",
+        "license_note": "MIT",
+        "default_resolution": 1024,
+        "max_resolution": 2304,
+        "supports_heavy": True,
+        "force_square": False,
+        "optional": False,
+    },
+    "bria-rmbg-2": {
+        "label": "BRIA RMBG-2.0 \u2014 product/e-commerce \u26a0\ufe0f license caution",
+        "hf_model_id": "briaai/RMBG-2.0",
+        "license_note": "Non-commercial unless you hold a BRIA commercial license.",
+        "default_resolution": 1024,
+        "max_resolution": 1024,
+        "supports_heavy": False,
+        "force_square": True,
+        "optional": False,
+    },
+    "ben2": {
+        "label": "BEN2 \u2014 alternate object/product refinement",
+        "hf_model_id": "PramaLLC/BEN2",
+        "license_note": "MIT base \u2014 check model card for commercial caveats.",
+        "default_resolution": 1024,
+        "max_resolution": 1024,
+        "supports_heavy": True,
+        "force_square": True,
+        "optional": True,
+    },
+    "birefnet-general": {
+        "label": "BiRefNet General \u2014 reliable fallback",
+        "hf_model_id": "ZhengPeng7/BiRefNet",
+        "license_note": "MIT",
+        "default_resolution": 1024,
+        "max_resolution": 1024,
+        "supports_heavy": False,
+        "force_square": True,
+        "optional": False,
+    },
+    "legacy-rembg": {
+        "label": "Legacy rembg \u2014 old compatibility mode",
+        "hf_model_id": None,
+        "license_note": "MIT (rembg + U\u00b2-Net)",
+        "default_resolution": None,
+        "max_resolution": None,
+        "supports_heavy": False,
+        "force_square": False,
+        "optional": False,
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -217,6 +296,52 @@ def unload_models():
             pass
 
 
+def unload_background_models(except_key=None):
+    """Evict all bg_* models from cache except *except_key* to free VRAM."""
+    removed = []
+    with _models_lock:
+        keys = [k for k in _models if k.startswith("bg_")]
+        keep = f"bg_{except_key}" if except_key else None
+        for k in keys:
+            if k != keep:
+                del _models[k]
+                removed.append(k)
+    if removed:
+        gc.collect()
+        if GPU_AVAILABLE:
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+
+def check_bg_model_available(model_key):
+    """Return (available: bool, error_msg: str|None) for a bg model."""
+    spec = BACKGROUND_MODELS.get(model_key)
+    if not spec:
+        return False, f"Unknown background model: {model_key}"
+    if model_key == "legacy-rembg":
+        try:
+            import rembg  # noqa: F401
+            return True, None
+        except ImportError:
+            return False, "rembg is not installed. pip install rembg"
+    if model_key == "ben2":
+        try:
+            from BEN2 import BEN2  # noqa: F401
+            return True, None
+        except ImportError:
+            return False, ("BEN2 is not installed. "
+                           "pip install BEN2 or see requirements-extra-bg.txt")
+    # transformers-based models
+    try:
+        from transformers import AutoModelForImageSegmentation  # noqa: F401
+        return True, None
+    except ImportError:
+        return False, "transformers is not installed. pip install transformers"
+
+
 def get_device():
     if GPU_AVAILABLE:
         try:
@@ -272,11 +397,131 @@ def get_realesrgan_upsampler(use_half):
 
 
 # ---------------------------------------------------------------------------
-# Tool: Background Removal
+# Tool: Background Removal — Mask utilities
+# ---------------------------------------------------------------------------
+def normalize_mask_to_uint8(mask):
+    """Convert a float tensor/ndarray mask to uint8 0-255."""
+    import numpy as np
+    if hasattr(mask, "cpu"):
+        mask = mask.detach().cpu().numpy()
+    mask = np.squeeze(mask)
+    if mask.ndim == 3:
+        mask = mask[0]  # take first channel
+    mask = np.clip(mask, 0.0, 1.0)
+    return (mask * 255).astype(np.uint8)
+
+
+def resize_mask_to_original(mask_uint8, original_size):
+    """Resize a uint8 mask (H,W) back to (W,H) PIL size with Lanczos."""
+    mask_pil = Image.fromarray(mask_uint8, mode="L")
+    return mask_pil.resize(original_size, Image.LANCZOS)
+
+
+def apply_alpha_to_image(pil_image, mask_pil):
+    """Apply an L-mode mask as alpha channel on the original image."""
+    rgba = pil_image.convert("RGBA")
+    rgba.putalpha(mask_pil)
+    return rgba
+
+
+def optional_postprocess_mask(mask_pil, allocation, model_key):
+    """Light mask cleanup for high/max allocations. Preserves continuous alpha."""
+    import numpy as np
+    if allocation == "standard":
+        return mask_pil
+    arr = np.array(mask_pil, dtype=np.float32)
+
+    # Remove tiny background specks (islands < 256 pixels)
+    if allocation in {"high", "max"}:
+        try:
+            from scipy import ndimage
+            binary = arr > 127
+            labeled, num_features = ndimage.label(binary)
+            for i in range(1, num_features + 1):
+                component = labeled == i
+                if component.sum() < 256:
+                    arr[component] = 0
+            # Also remove tiny foreground holes
+            inv_binary = arr <= 127
+            labeled_inv, num_inv = ndimage.label(inv_binary)
+            for i in range(1, num_inv + 1):
+                component = labeled_inv == i
+                if component.sum() < 256:
+                    arr[component] = 255
+        except ImportError:
+            pass  # scipy not available, skip speck removal
+
+    # Gentle Gaussian feather on max — preserves hair/fur edges
+    if allocation == "max":
+        try:
+            from PIL import ImageFilter
+            smoothed = Image.fromarray(arr.astype(np.uint8), mode="L")
+            smoothed = smoothed.filter(ImageFilter.GaussianBlur(radius=0.8))
+            return smoothed
+        except Exception:
+            pass
+
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), mode="L")
+
+
+def _resolve_bg_resolution(model_key, allocation, original_w, original_h):
+    """Return (proc_w, proc_h) for the given model+allocation."""
+    spec = BACKGROUND_MODELS[model_key]
+    force_sq = spec.get("force_square", True)
+    default_res = spec.get("default_resolution", 1024) or 1024
+    max_res = spec.get("max_resolution", 1024) or 1024
+
+    if allocation == "standard":
+        target = min(default_res, 1024)
+    elif allocation == "high":
+        target = min(max_res, 1536) if spec["supports_heavy"] else default_res
+    else:  # max
+        target = max_res
+
+    if force_sq:
+        return target, target
+
+    # Dynamic / non-square: cap the long side
+    long_side = max(original_w, original_h)
+    if long_side <= target:
+        # Use native — round to nearest 64 for tensor alignment
+        pw = (original_w + 63) // 64 * 64
+        ph = (original_h + 63) // 64 * 64
+        return pw, ph
+    scale = target / long_side
+    pw = int(original_w * scale) // 64 * 64
+    ph = int(original_h * scale) // 64 * 64
+    return max(pw, 64), max(ph, 64)
+
+
+# ---------------------------------------------------------------------------
+# Tool: Background Removal — Model router
 # ---------------------------------------------------------------------------
 def run_remove_bg(input_path, output_path, options):
-    from rembg import remove
+    model_key = str(options.get("bg_model", "birefnet-dynamic")).strip()
+    if model_key not in BACKGROUND_MODELS:
+        model_key = "birefnet-dynamic"
     allocation = get_compute_allocation(options)
+
+    # Check availability
+    avail, err = check_bg_model_available(model_key)
+    if not avail:
+        raise RuntimeError(
+            f"Selected background model backend is not installed: {model_key}. "
+            f"{err} Install optional dependencies or choose another model."
+        )
+
+    if model_key == "legacy-rembg":
+        _run_remove_bg_legacy(input_path, output_path, allocation)
+    elif model_key == "ben2":
+        _run_remove_bg_ben2(input_path, output_path, allocation)
+    else:
+        _run_remove_bg_transformers(input_path, output_path, model_key, allocation)
+
+
+def _run_remove_bg_legacy(input_path, output_path, allocation):
+    """Original rembg/U²-Net path — kept for backward compatibility."""
+    from rembg import remove
     img = Image.open(input_path)
     remove_kwargs = {}
     if allocation in {"high", "max"}:
@@ -290,6 +535,125 @@ def run_remove_bg(input_path, output_path, options):
         remove_kwargs["post_process_mask"] = True
     result = remove(img, **remove_kwargs)
     result.save(output_path, "PNG")
+
+
+def _run_remove_bg_ben2(input_path, output_path, allocation):
+    """BEN2 background removal — optional, graceful fallback."""
+    import torch
+    from BEN2 import BEN2
+
+    device = get_device()
+    cache_key = "bg_ben2"
+
+    unload_background_models(except_key="ben2")
+
+    with _models_lock:
+        if cache_key not in _models:
+            model = BEN2.from_pretrained("PramaLLC/BEN2")
+            model = model.to(device).eval()
+            _models[cache_key] = model
+    model = _models[cache_key]
+
+    img = Image.open(input_path).convert("RGB")
+    original_size = img.size
+
+    with torch.inference_mode():
+        if allocation == "max":
+            try:
+                result = model.inference(img, refine_foreground=True)
+            except TypeError:
+                result = model.inference(img)
+        else:
+            result = model.inference(img)
+
+    # result should be an RGBA PIL image
+    if result.mode == "RGBA":
+        result = result.resize(original_size, Image.LANCZOS)
+        result.save(output_path, "PNG")
+    else:
+        # Fallback: treat as mask
+        mask = result.convert("L").resize(original_size, Image.LANCZOS)
+        rgba = img.resize(original_size).convert("RGBA")
+        rgba.putalpha(mask)
+        rgba.save(output_path, "PNG")
+
+    torch.cuda.empty_cache()
+
+
+def _run_remove_bg_transformers(input_path, output_path, model_key, allocation):
+    """BiRefNet / BRIA RMBG via transformers AutoModelForImageSegmentation."""
+    import torch
+    import torchvision.transforms as T
+
+    spec = BACKGROUND_MODELS[model_key]
+    hf_id = spec["hf_model_id"]
+    device = get_device()
+    use_fp16 = (device.type == "cuda")
+    dtype = torch.float16 if use_fp16 else torch.float32
+
+    # --- Load model (lazy, single-model-at-a-time) ---
+    cache_key = f"bg_{model_key}"
+    unload_background_models(except_key=model_key)
+
+    with _models_lock:
+        if cache_key not in _models:
+            from transformers import AutoModelForImageSegmentation
+            model = AutoModelForImageSegmentation.from_pretrained(
+                hf_id, trust_remote_code=True
+            )
+            model = model.to(device=device, dtype=dtype).eval()
+            # Try channels-last for performance
+            try:
+                model = model.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+            _models[cache_key] = model
+    model = _models[cache_key]
+
+    # --- Open and preprocess image ---
+    img = Image.open(input_path).convert("RGB")
+    original_size = img.size  # (W, H)
+    proc_w, proc_h = _resolve_bg_resolution(
+        model_key, allocation, original_size[0], original_size[1]
+    )
+
+    transform = T.Compose([
+        T.Resize((proc_h, proc_w)),
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+    input_tensor = transform(img).unsqueeze(0).to(device=device, dtype=dtype)
+    if device.type == "cuda":
+        try:
+            input_tensor = input_tensor.to(memory_format=torch.channels_last)
+        except Exception:
+            pass
+
+    # --- Inference ---
+    with torch.inference_mode():
+        preds = model(input_tensor)
+
+    # Handle different output formats
+    if isinstance(preds, (list, tuple)):
+        pred = preds[-1]  # last output is typically the refined mask
+    elif hasattr(preds, "logits"):
+        pred = preds.logits
+    else:
+        pred = preds
+
+    pred = torch.sigmoid(pred)
+
+    # --- Post-process mask ---
+    mask_uint8 = normalize_mask_to_uint8(pred)
+    mask_pil = resize_mask_to_original(mask_uint8, original_size)
+    mask_pil = optional_postprocess_mask(mask_pil, allocation, model_key)
+    result = apply_alpha_to_image(img, mask_pil)
+    result.save(output_path, "PNG")
+
+    # Free VRAM
+    del input_tensor, preds, pred
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -570,23 +934,50 @@ def index():
 
 @app.route("/health")
 def health():
+    # Quick availability check for background models
+    bg_available = {}
+    for key in BACKGROUND_MODELS:
+        avail, _ = check_bg_model_available(key)
+        bg_available[key] = avail
+
+    cuda_available = False
+    try:
+        import torch
+        cuda_available = torch.cuda.is_available()
+    except Exception:
+        pass
+
     return jsonify({
         "status": "ok",
         "gpu": GPU_AVAILABLE,
         "gpu_name": GPU_NAME,
+        "cuda_available": cuda_available,
         "tools": list(TOOLS.keys()),
         "models_loaded": list(_models.keys()),
         "active_jobs": count_active_jobs(),
+        "background_models_available": bg_available,
     })
 
 
 @app.route("/tools")
 def tools_list():
+    # Serialize background models metadata for the frontend
+    bg_models_meta = {}
+    for key, spec in BACKGROUND_MODELS.items():
+        avail, _ = check_bg_model_available(key)
+        bg_models_meta[key] = {
+            "label": spec["label"],
+            "license_note": spec["license_note"],
+            "available": avail,
+            "optional": spec.get("optional", False),
+        }
+
     return jsonify({
         "tools": TOOLS,
         "styles": STYLE_PRESETS,
         "defaults": DEFAULT_OPTIONS,
         "compute_allocations": COMPUTE_ALLOCATIONS,
+        "background_models": bg_models_meta,
     })
 
 
@@ -620,7 +1011,17 @@ def process_upload():
     options["compute_allocation"] = request.form.get(
         "compute_allocation", options.get("compute_allocation", "standard")
     )
-    if tool == "upscale":
+    if tool == "remove-bg":
+        options["bg_model"] = request.form.get(
+            "bg_model", options.get("bg_model", "birefnet-dynamic")
+        )
+        options["bg_refinement"] = request.form.get(
+            "bg_refinement", options.get("bg_refinement", "auto")
+        )
+        options["bg_resolution_mode"] = request.form.get(
+            "bg_resolution_mode", options.get("bg_resolution_mode", "auto")
+        )
+    elif tool == "upscale":
         options["scale"] = request.form.get("scale", str(options["scale"]))
     elif tool == "style-transfer":
         options["style"] = request.form.get("style", options["style"])

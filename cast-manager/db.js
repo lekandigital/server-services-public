@@ -5,6 +5,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const crypto = require('crypto');
+const { inferKindFromPath, parentPathOf } = require('./lib/folders/starred');
 
 const DB_PATH = path.join(__dirname, 'cast_manager.db');
 let db;
@@ -44,8 +45,54 @@ function initDB() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS starred (
       file_path TEXT PRIMARY KEY,
+      item_type TEXT DEFAULT 'file',
+      name TEXT,
       starred_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+  `);
+  const starredColumns = db.prepare(`PRAGMA table_info(starred)`).all().map((row) => row.name);
+  if (!starredColumns.includes('item_type')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN item_type TEXT DEFAULT 'file'`);
+  }
+  if (!starredColumns.includes('name')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN name TEXT`);
+  }
+  if (!starredColumns.includes('kind')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN kind TEXT`);
+  }
+  if (!starredColumns.includes('parent_path')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN parent_path TEXT`);
+  }
+  if (!starredColumns.includes('pinned_to_sidebar')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN pinned_to_sidebar INTEGER DEFAULT 0`);
+  }
+  if (!starredColumns.includes('exists')) {
+    db.exec(`ALTER TABLE starred ADD COLUMN "exists" INTEGER`);
+  }
+  db.exec(`
+    UPDATE starred
+    SET
+      name = COALESCE(NULLIF(name, ''), file_path),
+      kind = COALESCE(NULLIF(kind, ''), CASE WHEN COALESCE(item_type, 'file') = 'folder' THEN 'folder' ELSE 'other' END),
+      pinned_to_sidebar = CASE WHEN COALESCE(item_type, 'file') = 'folder' THEN 1 ELSE COALESCE(pinned_to_sidebar, 0) END
+  `);
+
+  // ─── Cast Devices ─────────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cast_devices (
+      provider TEXT NOT NULL,
+      device_id TEXT NOT NULL,
+      name TEXT,
+      host TEXT,
+      port INTEGER,
+      model TEXT,
+      credentials TEXT,
+      selected INTEGER DEFAULT 0,
+      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (provider, device_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cast_devices_selected ON cast_devices(provider, selected);
   `);
 
   // ─── Recent Files ─────────────────────────────────────────
@@ -246,14 +293,42 @@ function getRecent(limit = 50) {
 
 // ─── Starred ─────────────────────────────────────────────────
 
-function starFile(filePath) {
+function normalizeStarKind(kind, filePath = '') {
+  const value = String(kind || '').toLowerCase();
+  if (['folder', 'video', 'audio', 'subtitle', 'other'].includes(value)) return value;
+  if (value === 'file') return inferKindFromPath(filePath, false);
+  return inferKindFromPath(filePath, false);
+}
+
+function normalizeStarType(itemType, filePath = '') {
+  const kind = normalizeStarKind(itemType, filePath);
+  return kind === 'folder' ? 'folder' : 'file';
+}
+
+function starFile(filePath, itemType = 'file', name = null, options = {}) {
   const d = getDB();
-  d.prepare(`INSERT OR IGNORE INTO starred (file_path) VALUES (?)`).run(filePath);
+  const kind = normalizeStarKind(options.kind || itemType, filePath);
+  const type = kind === 'folder' ? 'folder' : 'file';
+  const parentPath = options.parentPath || parentPathOf(filePath);
+  const pinned = options.pinnedToSidebar != null ? (options.pinnedToSidebar ? 1 : 0) : (kind === 'folder' ? 1 : 0);
+  const exists = options.exists == null ? null : (options.exists ? 1 : 0);
+  d.prepare(`
+    INSERT INTO starred (file_path, item_type, name, kind, parent_path, pinned_to_sidebar, "exists", starred_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(file_path) DO UPDATE SET
+      item_type = excluded.item_type,
+      kind = excluded.kind,
+      name = COALESCE(excluded.name, starred.name),
+      parent_path = excluded.parent_path,
+      pinned_to_sidebar = excluded.pinned_to_sidebar,
+      "exists" = excluded."exists",
+      starred_at = starred.starred_at
+  `).run(filePath, type, name || require('path').basename(filePath), kind, parentPath, pinned, exists);
 }
 
 function unstarFile(filePath) {
   const d = getDB();
-  d.prepare(`DELETE FROM starred WHERE file_path = ?`).run(filePath);
+  return d.prepare(`DELETE FROM starred WHERE file_path = ?`).run(filePath);
 }
 
 function isStarred(filePath) {
@@ -261,9 +336,127 @@ function isStarred(filePath) {
   return !!d.prepare(`SELECT 1 FROM starred WHERE file_path = ?`).get(filePath);
 }
 
-function getStarred() {
+function getStarred(itemType = null) {
   const d = getDB();
-  return d.prepare(`SELECT * FROM starred ORDER BY starred_at DESC`).all();
+  if (itemType) {
+    const kind = normalizeStarKind(itemType);
+    const itemTypeFilter = kind === 'folder' ? 'folder' : 'file';
+    return d.prepare(`
+      SELECT file_path, COALESCE(item_type, 'file') AS item_type, COALESCE(kind, item_type, 'file') AS kind,
+        COALESCE(name, '') AS name, parent_path, pinned_to_sidebar, "exists" AS "exists", starred_at
+      FROM starred
+      WHERE COALESCE(item_type, 'file') = ?
+        AND (? != 'folder' OR COALESCE(pinned_to_sidebar, 1) = 1)
+      ORDER BY starred_at DESC
+    `).all(itemTypeFilter, kind);
+  }
+  return d.prepare(`
+    SELECT file_path, COALESCE(item_type, 'file') AS item_type, COALESCE(kind, item_type, 'file') AS kind,
+      COALESCE(name, '') AS name, parent_path, pinned_to_sidebar, "exists" AS "exists", starred_at
+    FROM starred
+    ORDER BY starred_at DESC
+  `).all();
+}
+
+function updateStarredMetadata(filePath, updates = {}) {
+  const d = getDB();
+  const fields = [];
+  const values = [];
+  if (updates.kind !== undefined) {
+    const kind = normalizeStarKind(updates.kind, filePath);
+    fields.push('kind = ?', 'item_type = ?');
+    values.push(kind, kind === 'folder' ? 'folder' : 'file');
+  }
+  if (updates.name !== undefined) { fields.push('name = ?'); values.push(updates.name); }
+  if (updates.parentPath !== undefined) { fields.push('parent_path = ?'); values.push(updates.parentPath); }
+  if (updates.pinnedToSidebar !== undefined) { fields.push('pinned_to_sidebar = ?'); values.push(updates.pinnedToSidebar ? 1 : 0); }
+  if (updates.exists !== undefined) { fields.push('"exists" = ?'); values.push(updates.exists ? 1 : 0); }
+  if (!fields.length) return { changes: 0 };
+  values.push(filePath);
+  return d.prepare(`UPDATE starred SET ${fields.join(', ')} WHERE file_path = ?`).run(...values);
+}
+
+// ─── Cast Devices ────────────────────────────────────────────
+
+function upsertCastDevice(device = {}) {
+  const d = getDB();
+  const provider = String(device.provider || '').toLowerCase();
+  const deviceId = String(device.id || device.device_id || '').trim();
+  if (!provider || !deviceId) return;
+  d.prepare(`
+    INSERT INTO cast_devices (provider, device_id, name, host, port, model, credentials, selected, last_seen, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(provider, device_id) DO UPDATE SET
+      name = COALESCE(excluded.name, cast_devices.name),
+      host = COALESCE(excluded.host, cast_devices.host),
+      port = COALESCE(excluded.port, cast_devices.port),
+      model = COALESCE(excluded.model, cast_devices.model),
+      credentials = COALESCE(excluded.credentials, cast_devices.credentials),
+      selected = CASE WHEN excluded.selected = 1 THEN 1 ELSE cast_devices.selected END,
+      last_seen = datetime('now'),
+      updated_at = datetime('now')
+  `).run(provider, deviceId, device.name || null, device.host || null, device.port || null, device.model || null, device.credentials || null, device.selected ? 1 : 0);
+}
+
+function listCastDevices(provider = null, { includeCredentials = false } = {}) {
+  const d = getDB();
+  const rows = provider
+    ? d.prepare(`SELECT * FROM cast_devices WHERE provider = ? ORDER BY selected DESC, name`).all(provider)
+    : d.prepare(`SELECT * FROM cast_devices ORDER BY provider, selected DESC, name`).all();
+  return rows.map((row) => ({
+    ...row,
+    selected: !!row.selected,
+    paired: !!row.credentials,
+    credentials: includeCredentials ? row.credentials : (row.credentials ? '***' : null),
+  }));
+}
+
+function getCastDevice(provider, deviceId, { includeCredentials = true } = {}) {
+  const d = getDB();
+  const row = d.prepare(`SELECT * FROM cast_devices WHERE provider = ? AND device_id = ?`).get(provider, deviceId);
+  if (!row) return null;
+  return {
+    ...row,
+    selected: !!row.selected,
+    paired: !!row.credentials,
+    credentials: includeCredentials ? row.credentials : (row.credentials ? '***' : null),
+  };
+}
+
+function getSelectedCastDevice(provider = null, { includeCredentials = true } = {}) {
+  const d = getDB();
+  const row = provider
+    ? d.prepare(`SELECT * FROM cast_devices WHERE provider = ? AND selected = 1 ORDER BY updated_at DESC LIMIT 1`).get(provider)
+    : d.prepare(`SELECT * FROM cast_devices WHERE selected = 1 ORDER BY updated_at DESC LIMIT 1`).get();
+  if (!row) return null;
+  return {
+    ...row,
+    selected: !!row.selected,
+    paired: !!row.credentials,
+    credentials: includeCredentials ? row.credentials : (row.credentials ? '***' : null),
+  };
+}
+
+function setSelectedCastDevice(provider, deviceId) {
+  const d = getDB();
+  const tx = d.transaction(() => {
+    d.prepare(`UPDATE cast_devices SET selected = 0 WHERE provider = ?`).run(provider);
+    d.prepare(`
+      INSERT INTO cast_devices (provider, device_id, selected, updated_at, last_seen)
+      VALUES (?, ?, 1, datetime('now'), datetime('now'))
+      ON CONFLICT(provider, device_id) DO UPDATE SET selected = 1, updated_at = datetime('now')
+    `).run(provider, deviceId);
+  });
+  tx();
+}
+
+function updateCastDeviceCredentials(provider, deviceId, credentials) {
+  const d = getDB();
+  d.prepare(`
+    INSERT INTO cast_devices (provider, device_id, credentials, selected, updated_at, last_seen)
+    VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))
+    ON CONFLICT(provider, device_id) DO UPDATE SET credentials = excluded.credentials, selected = 1, updated_at = datetime('now')
+  `).run(provider, deviceId, credentials ? JSON.stringify(credentials) : null);
 }
 
 // ─── Trash ───────────────────────────────────────────────────
@@ -443,7 +636,8 @@ module.exports = {
   // Recent
   trackRecent, getRecent,
   // Starred
-  starFile, unstarFile, isStarred, getStarred,
+  starFile, unstarFile, isStarred, getStarred, updateStarredMetadata,
+  upsertCastDevice, listCastDevices, getCastDevice, getSelectedCastDevice, setSelectedCastDevice, updateCastDeviceCredentials,
   // Trash
   addToTrash, getTrash, getTrashItem, removeFromTrash, cleanExpiredTrash,
   // Shares

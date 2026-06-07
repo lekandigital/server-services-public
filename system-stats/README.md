@@ -1,6 +1,6 @@
 # System Stats (:8007)
 
-Live system monitoring dashboard showing CPU, GPU, RAM, disk usage, and service health. Includes historical data stored in SQLite.
+Live system monitoring dashboard showing CPU, GPU, RAM, disk usage, service health, and the full process list. Includes historical data stored in SQLite.
 
 ## Screenshots
 
@@ -19,7 +19,8 @@ Per-service status with PID and memory, plus CPU/RAM and GPU VRAM/temperature ch
 - Flask server with inline HTML/CSS/JS dashboard
 - Uses `psutil` for CPU/RAM/disk metrics
 - Uses `nvidia-smi` subprocess for GPU metrics (NVIDIA only)
-- Checks all service ports for online/offline status
+- Checks all service ports for online/offline status, including X-Bot, VLC, and Proton VPN
+- Lists all processes sorted by resident memory usage
 - Stores historical metrics in SQLite (`stats_history.db`, auto-created)
 
 ## Dependencies
@@ -39,6 +40,20 @@ pip packages:
 pip3 install -r requirements.txt
 # nvidia-smi is available if NVIDIA drivers are installed
 ```
+
+## GPU Troubleshooting
+
+The dashboard exposes `gpu_error` from `nvidia-smi` when GPU metrics cannot be read. If it reports `Driver/library version mismatch`, compare the loaded kernel module with the installed DKMS module:
+
+```bash
+cat /proc/driver/nvidia/version
+modinfo nvidia | grep '^version:'
+nvidia-smi
+```
+
+After an NVIDIA package update, a reboot is usually required so the running kernel loads the newly installed module.
+
+If a reboot is not possible yet, the monitor can temporarily use an extracted compatibility bundle at `.nvidia-compat/<loaded-version>/root` containing the matching `nvidia-smi` binary and `libnvidia-ml.so`. Normal system `nvidia-smi` is still preferred whenever it works.
 
 ## Files
 

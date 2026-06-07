@@ -83,7 +83,7 @@ echo -e "${GREEN}  ✓ System packages installed${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[2/7] Copying service files to ${INSTALL_DIR}...${NC}"
 mkdir -p "$INSTALL_DIR"
-cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,cast-manager,whisper-transcriber,ocr-engine,system-stats,ollama-gui,image-studio} "$INSTALL_DIR/"
+cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,cast-manager,whisper-transcriber,ocr-engine,system-stats,ollama-gui,image-studio,xbot-portal,vpn-portal} "$INSTALL_DIR/"
 chown -R "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
 echo -e "${GREEN}  ✓ Files copied${NC}"
 
@@ -92,7 +92,7 @@ echo -e "${GREEN}  ✓ Files copied${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[3/7] Installing Python dependencies...${NC}"
 
-for svc in server-portal whisper-transcriber ocr-engine system-stats twitter-bot image-studio; do
+for svc in server-portal whisper-transcriber ocr-engine system-stats twitter-bot image-studio vpn-portal; do
     if [ -f "$INSTALL_DIR/$svc/requirements.txt" ]; then
         echo -e "  ${BLUE}→ $svc${NC}"
         pip3 install -q -r "$INSTALL_DIR/$svc/requirements.txt"
@@ -134,6 +134,8 @@ declare -A SERVICE_FILES=(
     ["paddleocr"]="ocr-engine/paddleocr.service"
     ["system-stats"]="system-stats/system-stats.service"
     ["image-studio"]="image-studio/image-studio.service"
+    ["xbot-lan-dashboard"]="xbot-portal/xbot-lan-dashboard.service"
+    ["proton-vpn-portal"]="vpn-portal/proton-vpn-portal.service"
 )
 
 for svc_name in "${!SERVICE_FILES[@]}"; do
@@ -156,7 +158,7 @@ echo -e "${GREEN}  ✓ Systemd services installed${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[7/7] Enabling and starting services...${NC}"
 
-for svc_name in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio; do
+for svc_name in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal; do
     systemctl enable "$svc_name" 2>/dev/null
     systemctl start "$svc_name" 2>/dev/null && \
         echo -e "  ${GREEN}✓ ${svc_name}${NC}" || \
@@ -179,6 +181,9 @@ echo -e "  🎙️  Whisper Transcriber:  http://$(hostname -I | awk '{print $1}
 echo -e "  🔍 OCR Engine:           http://$(hostname -I | awk '{print $1}'):8006"
 echo -e "  📊 System Stats:         http://$(hostname -I | awk '{print $1}'):8007"
 echo -e "  🖼️  ML Image Studio:     http://$(hostname -I | awk '{print $1}'):8008"
+echo -e "  📡 X-Bot Portal:         http://$(hostname -I | awk '{print $1}'):8009"
+echo -e "  🎥 VLC Stream:           :8010 (directory indicator only)"
+echo -e "  🔐 Proton VPN Portal:    http://$(hostname -I | awk '{print $1}'):8011"
 echo ""
-echo -e "  Check status: ${YELLOW}sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio${NC}"
+echo -e "  Check status: ${YELLOW}sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal${NC}"
 echo -e "  View logs:    ${YELLOW}journalctl -u <service-name> -f${NC}"

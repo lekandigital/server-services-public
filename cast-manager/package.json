@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node tests/media-pipeline.test.js && node tests/starred.test.js"
   },
   "dependencies": {
     "archiver": "^6.0.1",

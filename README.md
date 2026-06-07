@@ -16,8 +16,12 @@ All services running on the home server, organized for deployment on any Ubuntu 
 │  :8006  🔍  OCR Engine         (Python/Flask+GPU)   │
 │  :8007  📊  System Stats       (Python/Flask)       │
 │  :8008  🖼️  ML Image Studio    (Python/Flask+GPU)   │
+│  :8009  📡  X-Bot Portal       (Uvicorn launcher)   │
+│  :8010  🎥  VLC Stream         (directory indicator)│
+│  :8011  🔐  Proton VPN Portal  (Python/Flask)       │
 │                                                     │
 │  Services managed by systemd                        │
+│  VLC is shown as a non-clickable listener indicator │
 │  Ollama GUI runs via Docker Compose                 │
 └─────────────────────────────────────────────────────┘
 ```
@@ -65,6 +69,9 @@ The deploy script will:
 | 8006 | [OCR Engine](ocr-engine/) | Python/Flask + CUDA | `ocr-engine/` |
 | 8007 | [System Stats](system-stats/) | Python/Flask | `system-stats/` |
 | 8008 | [ML Image Studio](image-studio/) | Python/Flask + CUDA | `image-studio/` |
+| 8009 | [X-Bot Portal](xbot-portal/) | systemd launcher for Uvicorn | `xbot-portal/` |
+| 8010 | VLC Stream | Listener indicator only | external |
+| 8011 | [Proton VPN Portal](vpn-portal/) | Python/Flask + Proton CLI | `vpn-portal/` |
 
 ## System Requirements
 
@@ -80,7 +87,7 @@ The deploy script will:
 
 ```bash
 # Check all service status
-sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio
+sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal
 
 # Restart a service
 sudo systemctl restart <service-name>
@@ -89,7 +96,7 @@ sudo systemctl restart <service-name>
 journalctl -u <service-name> -f
 
 # Stop all
-for s in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio; do sudo systemctl stop $s; done
+for s in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal; do sudo systemctl stop $s; done
 ```
 
 ## Private + Public Repo Workflow
@@ -171,21 +178,30 @@ server-services/
 │   ├── paddleocr.service
 │   └── README.md
 │
-└── system-stats/                ← :8007
+├── system-stats/                ← :8007
+│   ├── server.py
+│   ├── requirements.txt
+│   ├── system-stats.service
+│   └── README.md
+│
+├── image-studio/                ← :8008
+│   ├── server.py
+│   ├── static/index.html
+│   ├── requirements.txt
+│   ├── image-studio.service
+│   └── README.md
+│
+├── xbot-portal/                 ← :8009
+│   ├── xbot-lan-dashboard.service
+│   └── README.md
+│
+└── vpn-portal/                  ← :8011
     ├── server.py
     ├── requirements.txt
-    ├── system-stats.service
-    └── README.md
-
-└── image-studio/                ← :8008
-    ├── server.py
-    ├── static/index.html
-    ├── requirements.txt
-    ├── image-studio.service
+    ├── proton-vpn-portal.service
     └── README.md
 ```
 
 ## License
 
 MIT — see individual service directories for any upstream license requirements (e.g., Ollama GUI).
-
