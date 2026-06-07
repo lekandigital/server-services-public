@@ -1,0 +1,9 @@
+# Optional: BEN2 background removal model
+# Install separately — may have conflicting dependencies with other packages.
+#
+# pip install -r requirements-extra-bg.txt
+#
+# BEN2 is MIT-licensed at its base. Check the PramaLLC/BEN2 model card
+# for any commercial/full-model caveats before production use.
+
+BEN2

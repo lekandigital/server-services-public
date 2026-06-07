@@ -1,0 +1,19 @@
+[Unit]
+Description=Proton VPN Portal
+After=network-online.target me.proton.vpn.split_tunneling.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__INSTALL_DIR__/vpn-portal
+ExecStart=/usr/bin/python3 __INSTALL_DIR__/vpn-portal/server.py --port 8011
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proton-vpn-portal
+
+[Install]
+WantedBy=multi-user.target

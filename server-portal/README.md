@@ -1,11 +1,11 @@
 # Server Portal (:8001)
 
-Single-page Flask dashboard showing all services running on this machine. Provides live status checks via TCP probe and supports toggling services on/off via systemctl.
+Single-page Flask dashboard showing all services running on this machine. Provides live status checks via TCP probe and radio controls for starting/stopping mapped systemd services.
 
 ## Screenshots
 
 ### Service Dashboard
-All services at a glance — live status indicators, port badges, and one-click start/stop toggles.
+All services at a glance — live status indicators, port badges, and start/stop radio controls. VLC is shown as a greyed-out non-clickable listener indicator.
 
 ![Portal Dashboard](screenshots/portal-dashboard.png)
 
@@ -14,7 +14,7 @@ All services at a glance — live status indicators, port badges, and one-click 
 - Reads service definitions from `services.json`
 - Probes each port to determine online/offline status
 - Inline HTML UI (no separate template files)
-- Can start/stop services via systemctl commands
+- Can start/stop services via systemctl commands, prompting for a sudo password when required
 
 ## Dependencies
 

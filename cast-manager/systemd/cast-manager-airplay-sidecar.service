@@ -1,0 +1,16 @@
+[Unit]
+Description=Cast Manager AirPlay Sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/REDACTED_USER/server-services/cast-manager/sidecars/airplay
+Environment=AIRPLAY_SIDECAR_HOST=127.0.0.1
+Environment=AIRPLAY_SIDECAR_PORT=8765
+ExecStart=/home/REDACTED_USER/server-services/cast-manager/sidecars/airplay/.venv/bin/uvicorn airplay_sidecar:app --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

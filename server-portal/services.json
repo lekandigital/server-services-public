@@ -2,6 +2,7 @@
   {
     "name": "Server Portal",
     "description": "This page — directory of all services",
+    "id": "server-portal",
     "port": 8001,
     "icon": "🏠",
     "color": "#8b949e"
@@ -54,5 +55,35 @@
     "port": 8008,
     "icon": "🖼️",
     "color": "#7c3aed"
+  },
+  {
+    "name": "X-Bot Portal",
+    "description": "LAN dashboard for the current x-bot checkout",
+    "id": "x-bot-portal",
+    "port": 8009,
+    "url": "http://REDACTED_SERVER_IP:8009/",
+    "icon": "📡",
+    "color": "#38bdf8"
+  },
+  {
+    "name": "VLC Stream",
+    "description": "Active media stream listener",
+    "id": "vlc-stream",
+    "port": 8010,
+    "badge": ":8010",
+    "clickable": false,
+    "toggleable": false,
+    "icon": "🎥",
+    "color": "#f0883e"
+  },
+  {
+    "name": "Proton VPN",
+    "description": "VPN tunnel status and connect/disconnect controls",
+    "id": "proton-vpn",
+    "port": 8011,
+    "url": "http://REDACTED_SERVER_IP:8011/",
+    "kind": "vpn",
+    "icon": "🔐",
+    "color": "#38bdf8"
   }
 ]

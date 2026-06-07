@@ -17,6 +17,7 @@ from flask import Flask, Response, jsonify, request
 app = Flask(__name__)
 
 HOST_IP = "REDACTED_SERVER_IP"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVICE_TARGETS = [
     {"name": "Server Portal", "port": 8001, "unit": "server-portal.service"},
     {"name": "Ollama GUI", "port": 8002, "unit": "ollama.service", "url": "http://REDACTED_SERVER_IP:8002/"},
@@ -25,10 +26,14 @@ SERVICE_TARGETS = [
     {"name": "Whisper Transcriber", "port": 8005, "unit": "faster-whisper.service"},
     {"name": "OCR Engine", "port": 8006, "unit": "paddleocr.service"},
     {"name": "System Stats", "port": 8007, "unit": "system-stats.service"},
+    {"name": "X-Bot Portal", "port": 8009, "unit": "xbot-lan-dashboard.service"},
+    {"name": "VLC Stream", "port": 8010},
+    {"name": "Proton VPN Portal", "port": 8011, "unit": "proton-vpn-portal.service"},
 ]
 
 # ── History tracking (SQLite-backed) ──
-HISTORY_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stats_history.db")
+HISTORY_DB = os.path.join(APP_DIR, "stats_history.db")
+NVIDIA_COMPAT_DIR = os.path.join(APP_DIR, ".nvidia-compat")
 _prev_net = {"sent": 0, "recv": 0, "ts": 0}
 _db_lock = threading.Lock()
 
@@ -125,13 +130,66 @@ def start_history_collector():
 
 
 def run_command(args):
-    try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=10, check=False)
-        if result.returncode != 0:
-            return ""
-        return result.stdout.strip()
-    except Exception:
+    result = run_command_result(args)
+    if result["returncode"] != 0:
         return ""
+    return result["stdout"]
+
+
+def run_command_result(args, env=None):
+    try:
+        result = subprocess.run(args, capture_output=True, text=True, timeout=10, check=False, env=env)
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+        }
+    except FileNotFoundError as exc:
+        return {"stdout": "", "stderr": str(exc), "returncode": 127}
+    except Exception as exc:
+        return {"stdout": "", "stderr": str(exc), "returncode": 1}
+
+
+def command_error_message(result):
+    details = result.get("stderr") or result.get("stdout") or f"exit {result.get('returncode')}"
+    lines = [line.strip() for line in details.splitlines() if line.strip()]
+    return "; ".join(lines[:3])
+
+
+def loaded_nvidia_module_version():
+    try:
+        with open("/proc/driver/nvidia/version", "r", encoding="utf-8") as fh:
+            for token in fh.read().split():
+                if token[:1].isdigit() and token.count(".") >= 2:
+                    return token
+    except OSError:
+        return None
+    return None
+
+
+def nvidia_compat_paths(version):
+    if not version:
+        return None
+    root = os.path.join(NVIDIA_COMPAT_DIR, version, "root")
+    binary = os.path.join(root, "usr/bin/nvidia-smi")
+    lib_dir = os.path.join(root, "usr/lib/x86_64-linux-gnu")
+    if os.path.exists(binary) and os.path.isdir(lib_dir):
+        return {"binary": binary, "lib_dir": lib_dir}
+    return None
+
+
+def run_nvidia_smi(args, compat_version=None):
+    binary = "nvidia-smi"
+    env = None
+    compat = nvidia_compat_paths(compat_version)
+    if compat:
+        binary = compat["binary"]
+        env = os.environ.copy()
+        current_lib_path = env.get("LD_LIBRARY_PATH")
+        env["LD_LIBRARY_PATH"] = (
+            f"{compat['lib_dir']}:{current_lib_path}" if current_lib_path else compat["lib_dir"]
+        )
+    return run_command_result([binary, *args], env=env)
 
 
 def format_uptime(seconds):
@@ -179,38 +237,56 @@ def get_gpu_stats():
         "index,name,temperature.gpu,utilization.gpu,memory.used,memory.total,"
         "power.draw,power.limit,fan.speed"
     )
-    output = run_command(
-        ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"]
-    )
+    query_args = [f"--query-gpu={query}", "--format=csv,noheader,nounits"]
+    result = run_nvidia_smi(query_args)
+    compat_version = None
+    warning = None
+    if result["returncode"] != 0 and "Driver/library version mismatch" in command_error_message(result):
+        loaded_version = loaded_nvidia_module_version()
+        compat_result = run_nvidia_smi(query_args, compat_version=loaded_version)
+        if compat_result["returncode"] == 0:
+            result = compat_result
+            compat_version = loaded_version
+            warning = (
+                f"Using nvidia-smi compatibility bundle for loaded driver {loaded_version}; "
+                "reboot to load the installed NVIDIA module."
+            )
+
+    if result["returncode"] != 0:
+        return {"gpus": [], "error": command_error_message(result), "warning": None}
+
+    output = result["stdout"]
     if not output:
-        return []
+        return {"gpus": [], "error": None, "warning": None}
 
     rows = []
     reader = csv.reader(output.splitlines())
     for row in reader:
         if len(row) != 9:
             continue
-        rows.append(
-            {
-                "index": int(row[0].strip()),
-                "name": row[1].strip(),
-                "temp_c": float(row[2].strip()),
-                "util_percent": float(row[3].strip()),
-                "memory_used_mb": int(float(row[4].strip())),
-                "memory_total_mb": int(float(row[5].strip())),
-                "power_draw_w": float(row[6].strip()),
-                "power_limit_w": float(row[7].strip()),
-                "fan_percent": None if row[8].strip() == "[N/A]" else float(row[8].strip()),
-            }
-        )
+        try:
+            rows.append(
+                {
+                    "index": int(row[0].strip()),
+                    "name": row[1].strip(),
+                    "temp_c": float(row[2].strip()),
+                    "util_percent": float(row[3].strip()),
+                    "memory_used_mb": int(float(row[4].strip())),
+                    "memory_total_mb": int(float(row[5].strip())),
+                    "power_draw_w": float(row[6].strip()),
+                    "power_limit_w": float(row[7].strip()),
+                    "fan_percent": None if row[8].strip() == "[N/A]" else float(row[8].strip()),
+                }
+            )
+        except ValueError:
+            continue
 
-    proc_output = run_command(
-        [
-            "nvidia-smi",
-            "--query-compute-apps=pid,process_name,used_memory",
-            "--format=csv,noheader,nounits",
-        ]
-    )
+    proc_args = [
+        "--query-compute-apps=pid,process_name,used_memory",
+        "--format=csv,noheader,nounits",
+    ]
+    proc_result = run_nvidia_smi(proc_args, compat_version=compat_version)
+    proc_output = proc_result["stdout"] if proc_result["returncode"] == 0 else ""
     gpu_processes = []
     if proc_output:
         for line in proc_output.splitlines():
@@ -227,7 +303,7 @@ def get_gpu_stats():
 
     for row in rows:
         row["processes"] = gpu_processes
-    return rows
+    return {"gpus": rows, "error": None, "warning": warning}
 
 
 def port_is_open(port):
@@ -239,32 +315,58 @@ def port_is_open(port):
         sock.close()
 
 
+def process_for_port(port):
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if not conn.laddr or conn.status != psutil.CONN_LISTEN:
+                continue
+            if conn.laddr.port == int(port) and conn.pid:
+                return psutil.Process(conn.pid)
+    except Exception:
+        return None
+    return None
+
+
 def service_snapshot():
     services = []
     for item in SERVICE_TARGETS:
-        show = run_command(
-            ["systemctl", "show", item["unit"], "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"]
-        )
-        state = "unknown"
-        sub_state = ""
+        online = port_is_open(item["port"])
+        state = "active" if online else "inactive"
+        sub_state = "listening" if online else "closed"
         pid = 0
-        for line in show.splitlines():
-            if line.startswith("ActiveState="):
-                state = line.split("=", 1)[1]
-            elif line.startswith("SubState="):
-                sub_state = line.split("=", 1)[1]
-            elif line.startswith("MainPID="):
-                try:
-                    pid = int(line.split("=", 1)[1])
-                except ValueError:
-                    pid = 0
+        unit = item.get("unit", "")
+        if unit:
+            show = run_command(
+                ["systemctl", "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID"]
+            )
+            state = "unknown"
+            sub_state = ""
+            for line in show.splitlines():
+                if line.startswith("ActiveState="):
+                    state = line.split("=", 1)[1]
+                elif line.startswith("SubState="):
+                    sub_state = line.split("=", 1)[1]
+                elif line.startswith("MainPID="):
+                    try:
+                        pid = int(line.split("=", 1)[1])
+                    except ValueError:
+                        pid = 0
 
         memory_rss = None
         cpu_percent = None
         process_name = None
+        proc = None
         if pid > 0:
             try:
                 proc = psutil.Process(pid)
+            except Exception:
+                proc = None
+        if proc is None:
+            proc = process_for_port(item["port"])
+            if proc is not None:
+                pid = proc.pid
+        if proc is not None:
+            try:
                 memory_rss = proc.memory_info().rss
                 cpu_percent = proc.cpu_percent(interval=0.0)
                 process_name = proc.name()
@@ -274,10 +376,10 @@ def service_snapshot():
         services.append(
             {
                 "name": item["name"],
-                "unit": item["unit"],
+                "unit": unit,
                 "port": item["port"],
                 "url": item.get("url", f"http://REDACTED_SERVER_IP:{item['port']}/"),
-                "online": port_is_open(item["port"]),
+                "online": online,
                 "active_state": state,
                 "sub_state": sub_state,
                 "pid": pid,
@@ -289,9 +391,10 @@ def service_snapshot():
     return services
 
 
-def top_processes(limit=8):
+def all_processes():
     processes = []
-    for proc in psutil.process_iter(["pid", "name", "username", "memory_info", "cpu_percent", "cmdline"]):
+    attrs = ["pid", "name", "username", "memory_info", "cpu_percent", "cmdline", "status", "create_time"]
+    for proc in psutil.process_iter(attrs):
         try:
             info = proc.info
             memory_rss = info["memory_info"].rss if info.get("memory_info") else 0
@@ -303,14 +406,16 @@ def top_processes(limit=8):
                     "user": info.get("username") or "",
                     "memory_rss": memory_rss,
                     "cpu_percent": info.get("cpu_percent") or 0.0,
-                    "cmdline": cmdline[:180],
+                    "status": info.get("status") or "",
+                    "create_time": info.get("create_time") or 0,
+                    "cmdline": cmdline[:500],
                 }
             )
         except Exception:
             continue
 
     processes.sort(key=lambda item: item["memory_rss"], reverse=True)
-    return processes[:limit]
+    return processes
 
 
 def stats_payload():
@@ -320,6 +425,8 @@ def stats_payload():
     net = psutil.net_io_counters()
     boot_time = psutil.boot_time()
     now = time.time()
+
+    gpu_stats = get_gpu_stats()
 
     return {
         "host": HOST_IP,
@@ -355,9 +462,11 @@ def stats_payload():
             "bytes_sent": net.bytes_sent,
             "bytes_recv": net.bytes_recv,
         },
-        "gpus": get_gpu_stats(),
+        "gpus": gpu_stats["gpus"],
+        "gpu_error": gpu_stats["error"],
+        "gpu_warning": gpu_stats["warning"],
         "services": service_snapshot(),
-        "top_processes": top_processes(),
+        "processes": all_processes(),
     }
 
 
@@ -498,6 +607,7 @@ HTML_PAGE = """<!DOCTYPE html>
       color: var(--muted);
       margin-top: 6px;
       font-size: 13px;
+      overflow-wrap: anywhere;
     }
     .metric-grid {
       display: grid;
@@ -565,10 +675,11 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .process-row {
       display: grid;
-      grid-template-columns: minmax(0, 1.6fr) auto;
+      grid-template-columns: minmax(0, 1.6fr) repeat(2, auto);
       gap: 10px;
       padding: 10px 0;
       border-bottom: 1px solid rgba(143, 163, 191, 0.12);
+      align-items: start;
     }
     .process-row:last-child {
       border-bottom: 0;
@@ -580,6 +691,17 @@ HTML_PAGE = """<!DOCTYPE html>
     }
     .muted {
       color: var(--muted);
+    }
+    .process-list {
+      max-height: 680px;
+      overflow: auto;
+      padding-right: 6px;
+    }
+    .process-meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 4px;
     }
     @media (max-width: 980px) {
       .hero, .metric-grid, .grid-two {
@@ -742,8 +864,11 @@ HTML_PAGE = """<!DOCTYPE html>
       </div>
 
       <div class="panel">
-        <div class="label" style="margin-bottom: 12px;">Top Processes</div>
-        <div id="process-list" class="list"></div>
+        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:12px;">
+          <div class="label">All Processes</div>
+          <div class="subvalue" id="process-count">0 processes</div>
+        </div>
+        <div id="process-list" class="list process-list"></div>
       </div>
     </section>
 
@@ -826,6 +951,22 @@ HTML_PAGE = """<!DOCTYPE html>
       return `${Number(value).toFixed(0)}%`;
     }
 
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function summarizeGpuError(error) {
+      if (!error) return "";
+      if (error.includes("Driver/library version mismatch")) {
+        return "NVML driver/library version mismatch";
+      }
+      return error;
+    }
+
     function renderServices(services) {
       const body = document.getElementById("services-body");
       body.innerHTML = services.map((service) => {
@@ -846,12 +987,19 @@ HTML_PAGE = """<!DOCTYPE html>
 
     function renderProcesses(processes) {
       const list = document.getElementById("process-list");
+      document.getElementById("process-count").textContent = `${processes.length} processes`;
       list.innerHTML = processes.map((proc) => `
         <div class="process-row">
           <div>
-            <div class="process-name">${proc.name || proc.cmdline || "process"}</div>
-            <div class="muted mono">${proc.cmdline || `pid ${proc.pid}`}</div>
+            <div class="process-name">${escapeHtml(proc.name || proc.cmdline || "process")}</div>
+            <div class="muted mono">${escapeHtml(proc.cmdline || `pid ${proc.pid}`)}</div>
+            <div class="process-meta muted mono">
+              <span>pid ${proc.pid}</span>
+              <span>${escapeHtml(proc.user || "-")}</span>
+              <span>${escapeHtml(proc.status || "-")}</span>
+            </div>
           </div>
+          <div class="mono">${Number(proc.cpu_percent || 0).toFixed(1)}%</div>
           <div class="mono">${formatBytes(proc.memory_rss)}</div>
         </div>
       `).join("");
@@ -861,6 +1009,10 @@ HTML_PAGE = """<!DOCTYPE html>
       const res = await fetch("/api/stats", { cache: "no-store" });
       const data = await res.json();
       const gpu = (data.gpus || [])[0] || null;
+      const gpuError = data.gpu_error || "";
+      const gpuWarning = data.gpu_warning || "";
+      const gpuHeat = document.getElementById("gpu-heat");
+      const gpuUtil = document.getElementById("gpu-util");
 
       document.getElementById("last-updated").textContent = new Date().toLocaleTimeString();
       document.getElementById("uptime").textContent = data.uptime_text;
@@ -876,18 +1028,29 @@ HTML_PAGE = """<!DOCTYPE html>
 
       if (gpu) {
         document.getElementById("gpu-vram").textContent = formatMbPair(gpu.memory_used_mb, gpu.memory_total_mb);
-        document.getElementById("gpu-heat").textContent = `${gpu.temp_c.toFixed(0)} C, fan ${gpu.fan_percent === null ? "n/a" : `${gpu.fan_percent.toFixed(0)}%`}`;
+        gpuHeat.textContent = `${gpu.temp_c.toFixed(0)} C, fan ${gpu.fan_percent === null ? "n/a" : `${gpu.fan_percent.toFixed(0)}%`}`;
+        gpuHeat.title = gpuWarning;
         document.getElementById("gpu-power").textContent = `${gpu.power_draw_w.toFixed(0)} / ${gpu.power_limit_w.toFixed(0)} W`;
-        document.getElementById("gpu-util").textContent = `util ${gpu.util_percent.toFixed(0)}%`;
+        gpuUtil.textContent = `util ${gpu.util_percent.toFixed(0)}%`;
+        gpuUtil.title = gpuWarning;
+      } else if (gpuError) {
+        document.getElementById("gpu-vram").textContent = "GPU error";
+        gpuHeat.textContent = summarizeGpuError(gpuError);
+        gpuHeat.title = gpuError;
+        document.getElementById("gpu-power").textContent = "--";
+        gpuUtil.textContent = "driver check failed";
+        gpuUtil.title = gpuError;
       } else {
         document.getElementById("gpu-vram").textContent = "no GPU";
-        document.getElementById("gpu-heat").textContent = "not detected";
+        gpuHeat.textContent = "not detected";
+        gpuHeat.title = "";
         document.getElementById("gpu-power").textContent = "--";
-        document.getElementById("gpu-util").textContent = "--";
+        gpuUtil.textContent = "--";
+        gpuUtil.title = "";
       }
 
       renderServices(data.services || []);
-      renderProcesses(data.top_processes || []);
+      renderProcesses(data.processes || data.top_processes || []);
     }
 
     // ── Chart rendering engine ──

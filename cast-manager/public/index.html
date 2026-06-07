@@ -22,10 +22,6 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></svg>
           <span>Home</span>
         </button>
-        <button class="nav-item" data-section="library" onclick="showSection('library')">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
-          <span>My Files</span>
-        </button>
         <button class="nav-item" data-section="recent" onclick="showSection('recent')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           <span>Recent</span>
@@ -34,13 +30,13 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           <span>Starred</span>
         </button>
+        <div class="starred-folder-panel" id="starred-folder-panel" style="display:none">
+          <div class="nav-subtitle">Starred Folders</div>
+          <div class="starred-folder-list" id="starred-folder-list"></div>
+        </div>
         <button class="nav-item" data-section="shared" onclick="showSection('shared')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
           <span>Shared by Me</span>
-        </button>
-        <button class="nav-item" data-section="trash" onclick="showSection('trash')">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6m5 0V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2"/></svg>
-          <span>Trash</span>
         </button>
         <div class="nav-divider"></div>
         <button class="nav-item" data-section="torrents" onclick="showSection('torrents')">
@@ -56,9 +52,13 @@
           <span>Playlists</span>
         </button>
         <div class="nav-divider"></div>
-        <button class="nav-item" data-section="storage" onclick="showSection('storage')">
+        <button class="nav-item" data-section="library" onclick="showSection('library')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-          <span>Storage</span>
+          <span>File Manager</span>
+        </button>
+        <button class="nav-item" data-section="trash" onclick="showSection('trash')">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="m19 6-.867 12.142A2 2 0 0 1 16.138 20H7.862a2 2 0 0 1-1.995-1.858L5 6m5 0V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2"/></svg>
+          <span>Trash</span>
         </button>
         <button class="nav-item" data-section="activity" onclick="showSection('activity')">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -188,44 +188,97 @@
       <!-- ═══ LIBRARY SECTION ═══ -->
       <section id="section-library" class="section">
         <div class="section-header">
-          <h1 class="section-title">My Files</h1>
-          <div class="section-actions" style="gap:6px;display:flex;align-items:center">
-            <button class="btn-secondary btn-sm" id="btn-delete-folder" onclick="deleteCurrentFolder()" style="display:none;color:var(--color-danger)" title="Delete this folder">Delete Folder</button>
-            <button class="btn-secondary btn-sm" onclick="createNewFolder()" title="New Folder">+ Folder</button>
-            <select class="input input-sm" style="width:auto;padding:4px 8px;font-size:12px"
-              onchange="sortFiles(this.value)" title="Sort by">
-              <option value="name">Name</option>
-              <option value="size">Size</option>
-              <option value="date">Date</option>
-              <option value="type">Type</option>
-            </select>
-            <button class="btn-icon" id="view-toggle-btn" onclick="toggleLibraryView()" title="Toggle view">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="3" width="7" height="7" />
-                <rect x="14" y="3" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" />
-                <rect x="14" y="14" width="7" height="7" />
-              </svg>
-            </button>
+          <div>
+            <h1 class="section-title">File Manager</h1>
+            <div class="section-subtitle" id="file-current-label">Workspace</div>
           </div>
         </div>
 
-        <!-- Breadcrumb -->
-        <div class="breadcrumb" id="breadcrumb"></div>
+        <div id="file-storage-summary" class="file-storage-summary">
+          <div class="empty-state small"><p>Loading storage summary...</p></div>
+        </div>
 
-        <!-- Search & Filter -->
-        <div class="filter-bar">
-          <input type="text" id="file-search" class="input input-sm" placeholder="Search files..."
+        <div class="file-manager-toolbar">
+          <div class="file-nav-buttons">
+            <button class="btn-icon" id="file-back-btn" onclick="goFileBack()" title="Back">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <button class="btn-icon" id="file-forward-btn" onclick="goFileForward()" title="Forward">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+            <button class="btn-icon" id="file-up-btn" onclick="goFileUp()" title="Up one level">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5"/><path d="M5 12l7-7 7 7"/></svg>
+            </button>
+            <button class="btn-secondary btn-sm" onclick="goFileRoot()" title="Go to storage root">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>
+              Root
+            </button>
+            <button class="btn-icon" onclick="refreshFiles()" title="Refresh">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+            </button>
+          </div>
+          <div class="breadcrumb" id="breadcrumb"></div>
+          <div class="file-toolbar-actions">
+            <label class="toggle-inline" title="Show files and folders whose names start with a dot">
+              <input type="checkbox" id="show-hidden-toggle" onchange="toggleShowHidden(this.checked)">
+              <span>Show hidden files</span>
+            </label>
+            <button class="btn-secondary btn-sm" onclick="createNewFile()" title="New file">+ File</button>
+            <button class="btn-secondary btn-sm" onclick="createNewFolder()" title="New folder">+ Folder</button>
+            <button class="btn-secondary btn-sm" onclick="selectAllVisibleFiles()" title="Select every visible item in this folder">Select All</button>
+            <button class="btn-secondary btn-sm danger" id="btn-delete-folder" onclick="deleteCurrentFolder()" style="display:none" title="Move this folder to trash">Trash Folder</button>
+            <button class="btn-secondary btn-sm danger" id="btn-delete-folder-now" onclick="deleteCurrentFolderNow()" style="display:none" title="Permanently delete this folder">Delete Now</button>
+          </div>
+        </div>
+
+        <div class="file-filter-row">
+          <input type="text" id="file-search" class="input input-sm" placeholder="Filter current folder..."
             oninput="filterFiles(this.value)">
+          <label class="toggle-inline" title="Search recursively from the storage root">
+            <input type="checkbox" id="recursive-search-toggle" onchange="toggleRecursiveSearch(this.checked)">
+            <span>Search all folders</span>
+          </label>
+          <select class="input input-sm" id="file-sort-select" onchange="sortFiles(this.value)" title="Sort by">
+            <option value="name">Sort: Name</option>
+            <option value="size">Sort: Size</option>
+            <option value="date">Sort: Modified</option>
+            <option value="type">Sort: Type</option>
+          </select>
           <div class="filter-tabs">
             <button class="filter-tab active" onclick="filterFileType('all', this)">All</button>
             <button class="filter-tab" onclick="filterFileType('video', this)">Video</button>
             <button class="filter-tab" onclick="filterFileType('audio', this)">Audio</button>
+            <button class="filter-tab" onclick="filterFileType('other', this)">Other</button>
           </div>
+          <button class="btn-icon" id="view-toggle-btn" onclick="toggleLibraryView()" title="Toggle view">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+            </svg>
+          </button>
         </div>
 
-        <!-- File List -->
-        <div id="file-list" class="file-list list-view"></div>
+        <div class="file-manager-body">
+          <div class="file-browser-pane">
+            <div id="file-selection-bar" class="file-selection-bar" style="display:none"></div>
+            <div class="file-list-header">
+              <span>Name</span>
+              <span>Type</span>
+              <span>Size</span>
+              <span>Modified</span>
+              <span></span>
+            </div>
+            <div id="file-list" class="file-list list-view"></div>
+          </div>
+          <aside id="file-preview" class="file-preview-panel">
+            <div class="empty-state small">
+              <p>No file selected.</p>
+              <p class="empty-hint">Select a file to preview details.</p>
+            </div>
+          </aside>
+        </div>
       </section>
 
       <!-- ═══ QUEUE SECTION ═══ -->
@@ -329,13 +382,36 @@
         <h1 class="section-title">Settings</h1>
         <div class="settings-groups">
           <div class="card settings-group">
-            <h3 class="settings-group-title">Chromecast</h3>
+            <h3 class="settings-group-title">Cast Devices</h3>
+            <div class="setting-row">
+              <label>Provider</label>
+              <select id="setting-provider" class="input input-sm">
+                <option value="all">All</option>
+                <option value="chromecast">Chromecast</option>
+                <option value="airplay">AirPlay</option>
+              </select>
+            </div>
             <div class="setting-row">
               <label>Device</label>
               <select id="setting-device" class="input input-sm" onchange="selectDevice(this.value)">
-                <option>REDACTED_DEVICE</option>
+                <option value="">No devices scanned</option>
               </select>
               <button class="btn-secondary btn-sm" onclick="scanDevices()">Scan</button>
+              <button class="btn-secondary btn-sm" onclick="startAirPlayPairing()">Pair AirPlay</button>
+            </div>
+          </div>
+          <div class="card settings-group">
+            <h3 class="settings-group-title">AirPlay Receiver</h3>
+            <div class="setting-row">
+              <label>Status</label>
+              <div id="receiver-status" class="setting-value">Checking...</div>
+              <button class="btn-secondary btn-sm" onclick="loadReceiverStatus()">Refresh</button>
+            </div>
+            <div class="setting-row">
+              <label>Receiver</label>
+              <button class="btn-secondary btn-sm" onclick="controlReceiver('start')">Start</button>
+              <button class="btn-secondary btn-sm" onclick="controlReceiver('stop')">Stop</button>
+              <button class="btn-secondary btn-sm" onclick="controlReceiver('restart')">Restart</button>
             </div>
           </div>
           <div class="card settings-group">
@@ -473,6 +549,24 @@
           <div class="modal-duration" id="cast-modal-duration"></div>
         </div>
         <div class="modal-section">
+          <label>Target:</label>
+          <div class="cast-target-row">
+            <span id="cast-target-label">No device selected</span>
+            <button class="btn-secondary btn-sm" type="button" onclick="scanDevices()">Scan</button>
+          </div>
+        </div>
+        <div class="modal-section">
+          <label>Mode:</label>
+          <select id="cast-mode-select" class="input input-sm" onchange="if(state.castModalFile)updateCastPipelinePreview(state.castModalFile.path)">
+            <option value="auto">Automatic recommended</option>
+            <option value="hls">Compatibility / HLS</option>
+            <option value="vlc">VLC-like fallback</option>
+            <option value="full-transcode">Force full transcode</option>
+            <option value="direct">Direct only</option>
+          </select>
+          <div class="pipeline-preview" id="cast-pipeline-label">Automatic compatibility mode</div>
+        </div>
+        <div class="modal-section">
           <label>Start playback from:</label>
           <input type="text" id="cast-seek-input" class="input" placeholder="00:00:00" value="00:00:00">
           <div class="quick-seek-btns">
@@ -491,6 +585,14 @@
           <select id="subtitle-select" class="input input-sm">
             <option value="">None</option>
           </select>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+            <input type="text" id="custom-subtitle-path" class="input input-sm" style="flex:1"
+              placeholder="Optional subtitle path on server, e.g. /home/REDACTED_USER/movie.en.srt">
+            <button class="btn-secondary btn-sm" type="button" onclick="prepareCustomSubtitleForCast()">Check</button>
+          </div>
+          <div style="font-size:11px;color:var(--color-text-muted);margin-top:6px;line-height:1.4">
+            Pick a detected subtitle or enter a server path. Cast Manager converts SRT/ASS/VTT/SUB to WebVTT for Chromecast.
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn-secondary" onclick="closeCastModal()">Cancel</button>
@@ -575,11 +677,16 @@
         </div>
         <!-- Stream URL panel (shown after generating) -->
         <div id="stream-url-panel" style="display:none;padding:16px;border-top:1px solid var(--color-border)">
-          <div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Shareable Stream URL</div>
+          <div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Browser Player URL</div>
           <div style="display:flex;gap:8px;align-items:center">
             <input type="text" id="stream-url-input" class="input" readonly style="flex:1;font-size:13px;font-family:monospace">
             <button class="btn-primary btn-sm" onclick="copyStreamUrlFromInput()">Copy</button>
             <a id="stream-url-open" href="#" target="_blank" class="btn-secondary btn-sm" style="text-decoration:none">Open</a>
+          </div>
+          <div style="font-size:12px;color:var(--color-text-muted);margin:12px 0 6px">Direct File URL</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="stream-direct-url-input" class="input" readonly style="flex:1;font-size:13px;font-family:monospace">
+            <button class="btn-secondary btn-sm" onclick="copyDirectStreamUrlFromInput()">Copy Direct</button>
           </div>
           <div id="stream-url-expires" style="font-size:11px;color:var(--color-text-muted);margin-top:6px"></div>
         </div>
@@ -601,8 +708,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
       <span>Home</span>
     </button>
-    <button class="mobile-nav-item" data-section="library" onclick="showSection('library')">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+      <button class="mobile-nav-item" data-section="library" onclick="showSection('library')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
       <span>Files</span>
     </button>
     <button class="mobile-nav-item" data-section="torrents" onclick="showSection('torrents')">
@@ -694,10 +801,17 @@
       <div class="modal-body">
         <div id="stream-url-modal-filename" style="font-weight:600;margin-bottom:12px"></div>
         <div style="margin-bottom:12px">
-          <label style="font-size:11px;color:var(--color-text-muted)">Shareable URL (works without VPN if public URL configured)</label>
+          <label style="font-size:11px;color:var(--color-text-muted)">Browser player URL with compatible audio</label>
           <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
             <input type="text" id="stream-url-modal-input" class="input" readonly style="flex:1;font-size:12px;font-family:monospace">
             <button class="btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('stream-url-modal-input').value);toast('URL copied!','success')">Copy</button>
+          </div>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:var(--color-text-muted)">Direct file URL for VLC/download clients</label>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+            <input type="text" id="stream-url-modal-direct-input" class="input" readonly style="flex:1;font-size:12px;font-family:monospace">
+            <button class="btn-secondary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('stream-url-modal-direct-input').value);toast('Direct URL copied!','success')">Copy</button>
           </div>
         </div>
         <div id="stream-url-modal-qr" style="text-align:center;margin:16px 0"></div>

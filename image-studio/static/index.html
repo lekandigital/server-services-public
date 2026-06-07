@@ -396,6 +396,20 @@ body::before{
   line-height:1.6;
   color:var(--muted);
 }
+.license-note{
+  margin-top:-4px;
+  margin-bottom:12px;
+  padding:10px 12px;
+  border-radius:14px;
+  background:rgba(199,125,16,.1);
+  border:1px solid rgba(199,125,16,.25);
+  font-size:12px;
+  line-height:1.6;
+  color:var(--warn);
+  display:none;
+}
+.license-note.show{display:block}
+.license-note strong{display:block;margin-bottom:4px}
 .options label{
   display:block;
   margin-bottom:6px;
@@ -769,7 +783,7 @@ body::before{
 
 <script>
 const TOOLS={
-  'remove-bg':{icon:'✂️',name:'Background Removal',desc:'Remove the background and export a transparent PNG.',defaults:'Transparent PNG output with optional extra matting refinement.'},
+  'remove-bg':{icon:'✂️',name:'Background Removal',desc:'Remove the background with selectable CUDA-accelerated models. Supports BiRefNet, BRIA RMBG, BEN2, and legacy rembg.',defaults:'Multiple local GPU matting backends. Default: BiRefNet Dynamic at high quality.'},
   'upscale':{icon:'🔍',name:'Super-Resolution',desc:'Increase resolution with Real-ESRGAN detail generation.',defaults:'Defaults to 4x for max quality. Extra compute switches to heavier precision.'},
   'style-transfer':{icon:'🎨',name:'Style Transfer',desc:'Apply a fast artistic style model to a photo.',defaults:'Starts with the Candy preset. Compute allocation has limited effect here.'},
   'colorize':{icon:'🌈',name:'Colorization',desc:'Restore color to black-and-white or faded imagery.',defaults:'Starts at render factor 45. Compute allocation has limited effect here.'},
@@ -821,14 +835,49 @@ function selectTool(toolKey){
 function renderOptions(toolKey){
   const panel=document.getElementById('optionsPanel');
   let html='<div class="options-note">The quality controls below already start at their highest settings. Compute allocation is separate: it tells the service to spend more GPU or CPU time on task-specific refinement when supported.</div>';
+
+  if(toolKey==='remove-bg'){
+    html+=`<label>Background Model</label>
+      <select id="opt-bg_model" onchange="handleBgModelChange(this.value)">
+        <option value="birefnet-dynamic" selected>BiRefNet Dynamic — adaptive general (default)</option>
+        <option value="birefnet-hr-matting">BiRefNet HR Matting — slow, best edge matte</option>
+        <option value="bria-rmbg-2">BRIA RMBG-2.0 — product/e-commerce ⚠️ license caution</option>
+        <option value="ben2">BEN2 — alternate object/product refinement</option>
+        <option value="birefnet-general">BiRefNet General — reliable fallback</option>
+        <option value="legacy-rembg">Legacy rembg — old compatibility mode</option>
+      </select>
+      <div class="license-note" id="briaLicenseNote">
+        <strong>⚠️ BRIA RMBG-2.0 License</strong>
+        Self-hosted HuggingFace weights are <b>non-commercial</b> unless you hold a separate BRIA commercial license/agreement. Do not use for commercial purposes without a license.
+      </div>`;
+  }
+
   html+=`<label>Compute Allocation</label>
     <select id="opt-compute_allocation" onchange="syncComputeLabel(this.value)">
-      <option value="standard" selected>Standard</option>
-      <option value="high">High</option>
+      <option value="standard">Standard</option>
+      <option value="high" ${toolKey==='remove-bg'?'selected':''}>High</option>
       <option value="max">Max</option>
     </select>
-    <div class="compute-note">High and Max have the strongest effect on background removal, upscaling, face restoration, and denoising.</div>`;
-  if(toolKey==='upscale'){
+    <div class="compute-note">${toolKey==='remove-bg'
+      ?'Standard: fast fp16 ≤1024. High: better detail 1536–2048. Max: heaviest path, uses significant VRAM.'
+      :'High and Max have the strongest effect on background removal, upscaling, face restoration, and denoising.'
+    }</div>`;
+
+  if(toolKey==='remove-bg'){
+    html+=`<label>Refinement</label>
+      <select id="opt-bg_refinement">
+        <option value="auto" selected>Auto</option>
+        <option value="none">None</option>
+        <option value="light">Light</option>
+        <option value="heavy">Heavy</option>
+      </select>
+      <label>Resolution Mode</label>
+      <select id="opt-bg_resolution_mode">
+        <option value="auto" selected>Auto</option>
+        <option value="native">Native</option>
+        <option value="force-square">Force Square</option>
+      </select>`;
+  }else if(toolKey==='upscale'){
     html+=`<label>Upscale Factor</label><select id="opt-scale"><option value="2">2x for speed</option><option value="4" selected>4x for quality</option></select>`;
   }else if(toolKey==='style-transfer'){
     html+=`<label>Style Preset</label><select id="opt-style"><option value="candy">Candy</option><option value="mosaic">Mosaic</option><option value="rain_princess">Rain Princess</option><option value="udnie">Udnie</option><option value="pointilism">Pointilism</option></select>`;
@@ -839,6 +888,11 @@ function renderOptions(toolKey){
   }
   panel.innerHTML=html;
   panel.classList.toggle('show',!!toolKey);
+}
+
+function handleBgModelChange(value){
+  const note=document.getElementById('briaLicenseNote');
+  if(note) note.classList.toggle('show',value==='bria-rmbg-2');
 }
 
 function syncComputeLabel(value){
@@ -887,6 +941,16 @@ function startProcess(){
   if(optionElements[selectedTool]){
     const element=document.getElementById(optionElements[selectedTool]);
     if(element)formData.append(optionNames[selectedTool],element.value);
+  }
+
+  // Background removal extra fields
+  if(selectedTool==='remove-bg'){
+    const bgModel=document.getElementById('opt-bg_model');
+    if(bgModel)formData.append('bg_model',bgModel.value);
+    const bgRef=document.getElementById('opt-bg_refinement');
+    if(bgRef)formData.append('bg_refinement',bgRef.value);
+    const bgRes=document.getElementById('opt-bg_resolution_mode');
+    if(bgRes)formData.append('bg_resolution_mode',bgRes.value);
   }
 
   document.getElementById('processBtn').disabled=true;

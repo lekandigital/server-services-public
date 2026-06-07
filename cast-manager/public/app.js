@@ -9,11 +9,39 @@ const state = {
   torrentFilter: 'all',
   torrentSearch: '',
   files: [],
-  currentPath: '/home/REDACTED_USER/watch_list',
+  visibleFiles: [],
+  starredPaths: new Set(),
+  starredFolders: [],
+  castDevices: [],
+  selectedCastDevice: null,
+  receiverStatus: null,
+  currentPath: '',
+  parentPath: '',
+  fileRoot: '',
+  fileRootLabel: 'Workspace',
+  fileBreadcrumbs: [],
+  fileSudoPwd: '',
   fileFilter: 'all',
   fileSearch: '',
   fileSort: 'name',
+  showHidden: false,
+  recursiveSearch: false,
+  recursiveSearchResults: [],
+  recursiveSearchLoading: false,
+  recursiveSearchTimer: null,
+  storageSummaryLoaded: false,
   libraryView: 'list',
+  selectedFile: null,
+  selectedFilePaths: new Set(),
+  preview: {
+    filePath: '',
+    content: '',
+    originalContent: '',
+    unsaved: false,
+    loading: false,
+  },
+  fileHistoryBack: [],
+  fileHistoryForward: [],
   queue: [],
   queueIndex: -1,
   repeatMode: 'off', // off, queue, one
@@ -27,6 +55,15 @@ const state = {
     duration: 0,
     volume: 80,
     filePath: '',
+    lastStatusAt: 0,
+    consecutiveStatusFailures: 0,
+    receiverReachable: true,
+    lastNormalizedStatus: null,
+    lastStopAt: 0,
+    lastUserCommand: null, // "seek" | "pause" | "resume" | "stop" | "start"
+    lastCommandId: 0,
+    lastCommandAt: 0,
+    lastSeekAt: 0,
   },
   castModalFile: null,
   settings: {
@@ -34,22 +71,96 @@ const state = {
     autoAdvance: true,
     saveInterval: 30,
     defaultView: 'list',
+    /** When true, Chromecast may use slow disk pre-transcode instead of live transcode (opt-in). Live full-transcode NVENC vs CPU is server-side (`CAST_LIVE_TRANSCODE_ENCODER` on cast-manager). */
+    allowPretranscode: false,
   },
   pollingTimers: {},
   isDraggingScrubber: false,
+  castControl: {
+    pending: false,
+    pendingAction: null,
+    pendingStartedAt: 0,
+    settleUntil: 0,
+    lastCommandAt: 0,
+    lastCommandAction: null,
+    ignoreNextScrubberClickUntil: 0,
+    idleStreak: 0,
+    lastNonIdleAt: 0,
+    lastKnownTime: 0,
+    lastKnownDuration: 0,
+    seekDebounceTimer: null,
+    seekInFlight: false,
+    seekQueued: false,
+    seekSettleMs: 1200,
+    lastSeekTarget: null,
+  },
+  fileLoadRequestId: 0,
+  skipNextLibraryAutoLoad: false,
 };
 
 // ─── Init ───────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   loadPersistedData();
-  showSection('home');
+  state.showHidden = localStorage.getItem('cm_show_hidden') === 'true';
+  state.recursiveSearch = localStorage.getItem('cm_recursive_search') === 'true';
+  state.fileSort = localStorage.getItem('cm_file_sort') || state.fileSort;
+  state.libraryView = localStorage.getItem('cm_file_view') || state.settings.defaultView || state.libraryView;
+  showSection(window.location.pathname === '/file-manager' ? 'library' : 'home');
   startPolling();
   setupKeyboardShortcuts();
   loadDiskInfo();
   renderContinueWatching();
   loadTorrents();
+  loadStarredFolders();
+  loadCastDevices();
+  loadReceiverStatus();
   checkInitialCastStatus();
 });
+
+window.addEventListener('beforeunload', (e) => {
+  if (!state.preview.unsaved) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+// ─── Cast control transaction helpers ───────────────────────
+function nowMs() { return Date.now(); }
+
+function beginCastCommand(action, settleMs = 1200) {
+  const t = nowMs();
+  state.castControl.pending = true;
+  state.castControl.pendingAction = action;
+  state.castControl.pendingStartedAt = t;
+  state.castControl.settleUntil = t + settleMs;
+  state.castControl.lastCommandAt = t;
+  state.castControl.lastCommandAction = action;
+}
+
+function endCastCommand() {
+  state.castControl.pending = false;
+  state.castControl.pendingAction = null;
+  state.castControl.pendingStartedAt = 0;
+}
+
+function shouldIgnorePollUpdate() {
+  const t = nowMs();
+  if (state.castControl.pending) return true;
+  if (t < state.castControl.settleUntil) return true;
+  return false;
+}
+
+function markCastCommand(command) {
+  state.casting.lastUserCommand = command;
+  state.casting.lastCommandId = (state.casting.lastCommandId || 0) + 1;
+  state.casting.lastCommandAt = nowMs();
+  if (command === 'seek') state.casting.lastSeekAt = nowMs();
+  if (command === 'stop') state.casting.lastStopAt = nowMs();
+  return state.casting.lastCommandId;
+}
+
+function isCurrentCastCommand(commandId) {
+  return commandId === state.casting.lastCommandId;
+}
 
 // Check if something is already casting on page load
 async function checkInitialCastStatus() {
@@ -106,7 +217,8 @@ function saveSetting(key, value) {
 }
 
 // ─── Navigation ─────────────────────────────────────────────
-function showSection(name) {
+function showSection(name, options = {}) {
+  if (state.currentSection === 'library' && name !== 'library' && state.preview.unsaved && !confirm('Discard unsaved changes?')) return;
   state.currentSection = name;
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(b => {
@@ -118,11 +230,14 @@ function showSection(name) {
   // Load data for section
   if (name === 'home') { loadTorrents(); renderContinueWatching(); loadDiskInfo(); }
   if (name === 'torrents') loadTorrents();
-  if (name === 'library') loadFiles();
+  if (name === 'library') {
+    if (options.skipLoad || state.skipNextLibraryAutoLoad) state.skipNextLibraryAutoLoad = false;
+    else loadFiles();
+  }
   if (name === 'queue') renderQueue();
   if (name === 'playlists') renderPlaylists();
   if (name === 'recent') loadRecent();
-  if (name === 'starred') loadStarred();
+  if (name === 'starred') { loadStarred(); loadStarredFolders(); }
   if (name === 'shared') loadShared();
   if (name === 'trash') loadTrash();
   if (name === 'storage') loadStorage();
@@ -148,6 +263,7 @@ function showConfirm(title, message, onOk) {
   document.getElementById('confirm-message').textContent = message;
   document.getElementById('confirm-modal').style.display = 'flex';
   const btn = document.getElementById('confirm-ok-btn');
+  btn.textContent = 'OK';
   btn.onclick = () => { closeConfirm(); onOk(); };
 }
 function closeConfirm() { document.getElementById('confirm-modal').style.display = 'none'; }
@@ -169,16 +285,65 @@ function closePasswordPrompt() { document.getElementById('password-modal').style
 
 // ─── API Helpers ────────────────────────────────────────────
 async function api(url, options = {}) {
+  const { body, headers, silent, ...fetchOptions } = options;
   try {
     const res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
-      body: options.body ? JSON.stringify(options.body) : undefined,
+      ...fetchOptions,
+      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
+      body: body ? JSON.stringify(body) : undefined,
     });
-    return await res.json();
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      const err = new Error(data.errorDetails?.message || data.error || `Request failed with ${res.status}`);
+      err.code = data.errorDetails?.code || data.code || '';
+      err.status = res.status;
+      throw err;
+    }
+    return data;
   } catch (err) {
-    toast(`Request failed: ${err.message}`, 'error');
+    if (!silent) toast(`Request failed: ${err.message}`, 'error');
     throw err;
+  }
+}
+
+function sudoHeaders(sudoPwd = state.fileSudoPwd) {
+  return sudoPwd ? { 'X-Sudo-Password': sudoPwd } : {};
+}
+
+function withSudoBody(body, sudoPwd = state.fileSudoPwd) {
+  return sudoPwd ? { ...body, sudoPwd } : body;
+}
+
+function askForSudo(title, message) {
+  return new Promise((resolve, reject) => {
+    showPasswordPrompt(title, message, (sudoPwd) => {
+      const value = String(sudoPwd || '');
+      if (!value) {
+        reject(new Error('Password is required to retry this operation.'));
+        return;
+      }
+      state.fileSudoPwd = value;
+      resolve(value);
+    });
+  });
+}
+
+async function withPermissionRetry(title, message, requestFn) {
+  try {
+    return await requestFn(state.fileSudoPwd);
+  } catch (err) {
+    if (err.code !== 'PERMISSION_DENIED') {
+      toast(`Request failed: ${err.message}`, 'error');
+      throw err;
+    }
+    try {
+      const sudoPwd = await askForSudo(title, message);
+      return await requestFn(sudoPwd);
+    } catch (retryErr) {
+      toast(`Request failed: ${retryErr.message}`, 'error');
+      throw retryErr;
+    }
   }
 }
 
@@ -264,6 +429,7 @@ function renderTorrents() {
     filtered = filtered.filter(t => t.name.toLowerCase().includes(q));
   }
 
+  state.visibleFiles = filtered;
   if (filtered.length === 0) {
     container.innerHTML = `<div class="empty-state"><p>${state.torrents.length === 0 ? 'No torrents yet.' : 'No matching torrents.'}</p><p class="empty-hint">Drop a magnet link or .torrent file above to get started.</p></div>`;
     return;
@@ -476,137 +642,478 @@ async function loadDiskInfo() {
 // FILE BROWSER
 // ═══════════════════════════════════════════════════════════════
 
-async function loadFiles(path) {
-  if (path) state.currentPath = path;
+async function loadFiles(targetPath, options = {}) {
+  const requestId = ++state.fileLoadRequestId;
+  if (!targetPath && !state.currentPath) {
+    targetPath = localStorage.getItem('cm_last_library_path') || state.fileRoot || '';
+  }
+  const pathChanged = targetPath && targetPath !== state.currentPath;
+  if (pathChanged && state.preview.unsaved && !confirm('Discard unsaved changes?')) return;
+  if (pathChanged && options.addHistory !== false && state.currentPath) {
+    state.fileHistoryBack.push(state.currentPath);
+    state.fileHistoryForward = [];
+  }
+  if (targetPath) state.currentPath = targetPath;
+
+  const container = document.getElementById('file-list');
+  if (container) container.innerHTML = '<div class="empty-state"><p>Loading files...</p></div>';
+
   try {
-    const data = await api(`/api/files?path=${encodeURIComponent(state.currentPath)}`);
+    const params = new URLSearchParams();
+    if (state.currentPath) params.set('path', state.currentPath);
+    params.set('showHidden', state.showHidden ? 'true' : 'false');
+    const data = await withPermissionRetry(
+      'Folder Access',
+      `Enter the server sudo password to open ${state.currentPath || 'this folder'}.`,
+      (sudoPwd) => api(`/api/files?${params.toString()}`, { headers: sudoHeaders(sudoPwd), silent: true })
+    );
+    if (requestId !== state.fileLoadRequestId) return;
     state.files = data.files || [];
-    renderBreadcrumb(data.currentPath, data.parentPath);
-    renderFiles();
-    
-    const delBtn = document.getElementById('btn-delete-folder');
-    if (delBtn) {
-      if (data.currentPath === '/home/REDACTED_USER/watch_list' || data.currentPath === '/home/REDACTED_USER/watch_list/') {
-        delBtn.style.display = 'none';
-      } else {
-        delBtn.style.display = 'inline-block';
-      }
+    for (const f of state.files) {
+      if (f.starred) state.starredPaths.add(f.path);
+      else state.starredPaths.delete(f.path);
     }
-  } catch (e) { /* already toasted */ }
+    state.currentPath = data.currentPath || state.currentPath;
+    state.parentPath = data.parentPath || state.currentPath;
+    state.fileRoot = data.rootPath || state.fileRoot || state.currentPath;
+    state.fileRootLabel = data.rootLabel || state.fileRootLabel || 'Workspace';
+    state.fileBreadcrumbs = data.breadcrumbs || [];
+    localStorage.setItem('cm_last_library_path', state.currentPath || '');
+
+    if (state.selectedFile && !state.files.some(f => f.path === state.selectedFile.path)) {
+      clearFileSelection();
+    }
+    if (state.selectedFilePaths.size) {
+      const currentPaths = new Set(state.files.map(f => f.path));
+      state.selectedFilePaths = new Set([...state.selectedFilePaths].filter(path => currentPaths.has(path)));
+    }
+
+    renderFileChrome();
+    renderBreadcrumb();
+    renderFiles();
+    renderSelectionBar();
+    loadFileStorageSummary();
+  } catch (e) {
+    if (requestId !== state.fileLoadRequestId) return;
+    if (container) {
+      container.innerHTML = `<div class="empty-state"><p>Could not load this folder.</p><p class="empty-hint">${esc(e.message)}</p></div>`;
+    }
+    renderFileChrome();
+  }
 }
 
-function renderBreadcrumb(currentPath, parentPath) {
-  const container = document.getElementById('breadcrumb');
-  const parts = currentPath.split('/').filter(Boolean);
-  let html = '';
-  let accumulated = '';
-  for (let i = 0; i < parts.length; i++) {
-    accumulated += '/' + parts[i];
-    const isLast = i === parts.length - 1;
-    if (isLast) {
-      html += `<span class="breadcrumb-item" style="color:var(--color-text-primary);font-weight:500">${esc(parts[i])}</span>`;
-    } else {
-      const p = accumulated;
-      html += `<button class="breadcrumb-item" onclick="loadFiles('${esc(p)}')">${esc(parts[i])}</button><span class="breadcrumb-sep">/</span>`;
-    }
+function renderFileChrome() {
+  const label = document.getElementById('file-current-label');
+  if (label) {
+    const rel = relativeToRoot(state.currentPath);
+    label.textContent = rel
+      ? `${state.fileRootLabel}: /${rel}`
+      : `${state.fileRootLabel}: ${state.fileRoot || ''}`;
   }
-  container.innerHTML = html;
+  const hiddenToggle = document.getElementById('show-hidden-toggle');
+  if (hiddenToggle) hiddenToggle.checked = state.showHidden;
+  const recursiveToggle = document.getElementById('recursive-search-toggle');
+  if (recursiveToggle) recursiveToggle.checked = state.recursiveSearch;
+  const sortSelect = document.getElementById('file-sort-select');
+  if (sortSelect) sortSelect.value = state.fileSort;
+  const delBtn = document.getElementById('btn-delete-folder');
+  const delNowBtn = document.getElementById('btn-delete-folder-now');
+  if (delBtn) delBtn.style.display = state.currentPath && state.currentPath !== state.fileRoot ? 'inline-block' : 'none';
+  if (delNowBtn) delNowBtn.style.display = state.currentPath && state.currentPath !== state.fileRoot ? 'inline-block' : 'none';
+  const backBtn = document.getElementById('file-back-btn');
+  const forwardBtn = document.getElementById('file-forward-btn');
+  const upBtn = document.getElementById('file-up-btn');
+  if (backBtn) backBtn.disabled = state.fileHistoryBack.length === 0;
+  if (forwardBtn) forwardBtn.disabled = state.fileHistoryForward.length === 0;
+  if (upBtn) upBtn.disabled = !state.currentPath || state.currentPath === state.fileRoot;
+}
+
+function renderBreadcrumb() {
+  const container = document.getElementById('breadcrumb');
+  if (!container) return;
+  const crumbs = state.fileBreadcrumbs.length
+    ? state.fileBreadcrumbs
+    : [{ label: state.fileRootLabel, path: state.fileRoot || state.currentPath }];
+  container.innerHTML = crumbs.map((crumb, i) => {
+    const isLast = i === crumbs.length - 1;
+    const p = jsArg(crumb.path);
+    const label = esc(crumb.label || state.fileRootLabel);
+    if (isLast) return `<span class="breadcrumb-item" style="color:var(--color-text-primary);font-weight:500">${label}</span>`;
+    return `<button class="breadcrumb-item" onclick="loadFiles('${p}')">${label}</button><span class="breadcrumb-sep">/</span>`;
+  }).join('');
 }
 
 function renderFiles() {
   const container = document.getElementById('file-list');
-  let filtered = state.files;
-
-  if (state.fileFilter !== 'all') {
-    filtered = filtered.filter(f => f.type === state.fileFilter || f.type === 'folder');
-  }
-  if (state.fileSearch) {
-    const q = state.fileSearch.toLowerCase();
-    filtered = filtered.filter(f => f.name.toLowerCase().includes(q));
-  }
-
-  if (filtered.length === 0) {
-    let emptyHtml = '<div class="empty-state"><p>This folder is empty.</p>';
-    if (state.currentPath !== '/home/REDACTED_USER/watch_list' && state.currentPath !== '/home/REDACTED_USER/watch_list/') {
-      emptyHtml += '<button class="btn-secondary btn-sm" onclick="deleteCurrentFolder()" style="margin-top:12px;color:var(--color-danger)">Delete this folder</button>';
-    }
-    emptyHtml += '</div>';
-    container.innerHTML = emptyHtml;
+  if (!container) return;
+  if (state.recursiveSearch && state.fileSearch && state.fileSearch.length >= 2 && state.recursiveSearchLoading) {
+    container.innerHTML = '<div class="empty-state"><p>Searching all folders...</p></div>';
     return;
   }
+  const usingRecursiveResults = state.recursiveSearch && state.fileSearch && state.fileSearch.length >= 2;
+  let filtered = usingRecursiveResults ? [...state.recursiveSearchResults] : [...state.files];
 
-  // Sort files: folders always first, then by selected sort
+  if (state.fileFilter !== 'all') {
+    filtered = filtered.filter(f => {
+      if (f.type === 'folder') return true;
+      if (state.fileFilter === 'other') return !['video', 'audio'].includes(f.type);
+      return f.type === state.fileFilter;
+    });
+  }
+  if (state.fileSearch && !usingRecursiveResults) {
+    const q = state.fileSearch.toLowerCase();
+    filtered = filtered.filter(f => f.name.toLowerCase().includes(q) || (f.relativePath || '').toLowerCase().includes(q));
+  }
+
   filtered.sort((a, b) => {
     if (a.type === 'folder' && b.type !== 'folder') return -1;
     if (a.type !== 'folder' && b.type === 'folder') return 1;
     switch (state.fileSort) {
       case 'size': return (b.size || 0) - (a.size || 0);
       case 'date': return (b.mtime || 0) - (a.mtime || 0);
-      case 'type': return (a.ext || '').localeCompare(b.ext || '') || a.name.localeCompare(b.name);
-      default: return a.name.localeCompare(b.name);
+      case 'type': return (a.ext || a.type || '').localeCompare(b.ext || b.type || '') || a.name.localeCompare(b.name);
+      default: return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     }
   });
 
   const isGrid = state.libraryView === 'grid';
   container.className = `file-list ${isGrid ? 'grid-view' : 'list-view'}`;
 
-  container.innerHTML = filtered.map(f => {
-    const icon = f.type === 'folder' ? '&#128193;' :
-      f.type === 'video' ? '&#127916;' :
-        f.type === 'audio' ? '&#127925;' :
-          f.type === 'subtitle' ? '&#128196;' : '&#128196;';
+  if (filtered.length === 0) {
+    const message = state.fileSearch
+      ? (usingRecursiveResults ? 'No matching files in storage.' : 'No matching files in this folder.')
+      : 'This folder is empty.';
+    container.innerHTML = `<div class="empty-state"><p>${message}</p><p class="empty-hint">${state.showHidden ? 'Hidden files are currently visible.' : 'Use Show hidden files to include dotfiles.'}</p></div>`;
+    return;
+  }
 
-    const pos = state.positions[fileHash(f.path)];
-    const progressHtml = pos && pos.duration > 0
-      ? `<div class="file-progress-bar" style="width:${Math.min(100, (pos.position / pos.duration) * 100)}%"></div>`
-      : '';
+  container.innerHTML = filtered.map(renderFileItem).join('');
+  if (isGrid) loadThumbnails(filtered);
+}
 
-    const escapedPath = esc(f.path).replace(/'/g, "\\'");
-    const escapedName = esc(f.name).replace(/'/g, "\\'");
-    const mediaActions = f.type === 'video' || f.type === 'audio'
-      ? `<button onclick="event.stopPropagation(); openStreamPlayer('${escapedPath}', '${f.type}')" style="color:var(--color-accent)">&#9654; Play</button>
-         <button onclick="event.stopPropagation(); showStreamUrlModal('${escapedPath}')" title="Generate shareable stream URL">Stream URL</button>
-         <button onclick="event.stopPropagation(); openCastModal('${escapedPath}', '${f.type}')">Cast</button>
-         <button onclick="event.stopPropagation(); addToQueue('${escapedPath}', '${escapedName}', '${f.type}')">Queue</button>
-         <button onclick="event.stopPropagation(); showPlaylistDropdown(event, '${escapedPath}', '${escapedName}', '${f.type}')">Playlist</button>`
-      : '';
-    const actions = `<div class="file-actions">
-          ${mediaActions}
-          <button onclick="event.stopPropagation(); toggleStar('${escapedPath}')" title="Star">&#11088;</button>
-          <button onclick="event.stopPropagation(); openShareModal('${escapedPath}', '${escapedName}')" title="Share">Share</button>
-          <button onclick="event.stopPropagation(); downloadFile('${escapedPath}')">Download</button>
-          <button onclick="event.stopPropagation(); renameFile('${escapedPath}', '${escapedName}')">Rename</button>
-          <button onclick="event.stopPropagation(); copyFile('${escapedPath}', '${escapedName}')">Copy</button>
-          <button onclick="event.stopPropagation(); moveFile('${escapedPath}', '${escapedName}')">Move</button>
-          <button onclick="event.stopPropagation(); deleteFile('${escapedPath}', '${escapedName}')" style="color:var(--color-danger)">Delete</button>
-        </div>`;
+function renderFileItem(f) {
+  const icon = fileIcon(f);
+  const pos = state.positions[fileHash(f.path)];
+  const progressHtml = pos && pos.duration > 0
+    ? `<div class="file-progress-bar" style="width:${Math.min(100, (pos.position / pos.duration) * 100)}%"></div>`
+    : '';
+  const escapedPath = jsArg(f.path);
+  const escapedName = jsArg(f.name);
+  const selected = state.selectedFile?.path === f.path || state.selectedFilePaths.has(f.path) ? ' selected' : '';
+  const hidden = f.isHidden || f.hidden ? ' hidden-file' : '';
+  const protectedClass = f.protected ? ' protected-file' : '';
+  const modified = f.modifiedAt ? new Date(f.modifiedAt).toLocaleString() : (f.mtime ? new Date(f.mtime * 1000).toLocaleString() : '-');
+  const typeLabel = f.type === 'folder' ? 'Folder' : (f.ext || f.type || 'File');
+  const hiddenBadge = f.isHidden || f.hidden ? '<span class="badge">hidden</span>' : '';
+  const protectedBadge = f.protected ? '<span class="badge warning">protected</span>' : '';
+  const searchPath = f.searchResult && f.relativePath ? `<span title="${esc(f.relativePath)}">${esc(f.relativePath)}</span>` : '';
+  const folderSize = f.sizeUnavailable ? 'Size unavailable' : formatBytes(f.size || 0);
+  const folderItems = f.itemCount !== undefined ? `${f.itemCount} items` : 'Folder';
+  const isStarredItem = !!f.starred || state.starredPaths.has(f.path);
+  const starIcon = isStarredItem ? '&#9733;' : '&#9734;';
+  const starTitle = isStarredItem ? 'Unstar' : 'Star';
 
-    const clickAction = f.type === 'folder'
-      ? `onclick="loadFiles('${esc(f.path)}')" `
-      : (f.type === 'video' || f.type === 'audio')
-        ? `onclick="openStreamPlayer('${esc(f.path)}', '${f.type}')" `
-        : '';
+  const mediaActions = (f.type === 'video' || f.type === 'audio') && !f.protected
+    ? `<button onclick="event.stopPropagation(); openStreamPlayer('${escapedPath}', '${f.type}')" style="color:var(--color-accent)">&#9654; Play</button>
+       <button onclick="event.stopPropagation(); showStreamUrlModal('${escapedPath}')" title="Generate shareable stream URL">Stream URL</button>
+       <button onclick="event.stopPropagation(); openCastModal('${escapedPath}', '${f.type}')">Cast</button>
+       <button onclick="event.stopPropagation(); addToQueue('${escapedPath}', '${escapedName}', '${f.type}')">Queue</button>
+       <button onclick="event.stopPropagation(); showPlaylistDropdown(event, '${escapedPath}', '${escapedName}', '${f.type}')">Playlist</button>`
+    : '';
+  const downloadAction = f.type !== 'folder' && !f.protected
+    ? `<button onclick="event.stopPropagation(); downloadFile('${escapedPath}')">Download</button>`
+    : '';
+  const shareAction = f.type !== 'folder' && !f.protected
+    ? `<button onclick="event.stopPropagation(); openShareModal('${escapedPath}', '${escapedName}')" title="Share">Share</button>`
+    : '';
+  const openAction = f.type === 'folder'
+    ? `<button onclick="event.stopPropagation(); openFolder('${escapedPath}', ${f.searchResult ? 'true' : 'false'})">Open</button>`
+    : `<button onclick="event.stopPropagation(); selectFile('${escapedPath}')">Preview</button>`;
+  const containingAction = f.searchResult && f.type !== 'folder'
+    ? `<button onclick="event.stopPropagation(); navigateToFile('${escapedPath}')">Open Folder</button>`
+    : '';
 
-    return `<div class="file-item" ${clickAction}>
+  const actions = `<div class="file-actions">
+      ${openAction}
+      ${containingAction}
+      ${mediaActions}
+      <button onclick="event.stopPropagation(); copyFileAddress('${escapedPath}')">Copy Address</button>
+      <button onclick="event.stopPropagation(); toggleStar('${escapedPath}', '${f.type}')" title="${starTitle}">${starIcon}</button>
+      ${shareAction}
+      ${downloadAction}
+      <button onclick="event.stopPropagation(); renameFile('${escapedPath}', '${escapedName}')">Rename</button>
+      <button onclick="event.stopPropagation(); copyFile('${escapedPath}', '${escapedName}')">Copy</button>
+      <button onclick="event.stopPropagation(); moveFile('${escapedPath}', '${escapedName}')">Move</button>
+      <button onclick="event.stopPropagation(); deleteFile('${escapedPath}', '${escapedName}')" style="color:var(--color-danger)">Trash</button>
+      <button onclick="event.stopPropagation(); deleteFileNow('${escapedPath}', '${escapedName}')" style="color:var(--color-danger)">Delete Now</button>
+    </div>`;
+
+  const clickAction = f.type === 'folder'
+    ? `onclick="openFolder('${escapedPath}', ${f.searchResult ? 'true' : 'false'})" ondblclick="openFolder('${escapedPath}', ${f.searchResult ? 'true' : 'false'})"`
+    : `onclick="selectFile('${escapedPath}')" ondblclick="openSelectedFile('${escapedPath}')"`;
+
+  return `<div class="file-item${selected}${hidden}${protectedClass}" data-file-hash="${fileHash(f.path)}" ${clickAction}>
+    <div class="file-item-cell">
       <div class="file-thumb-wrapper">
         <div class="file-thumb-placeholder">${icon}</div>
         <img class="file-thumb" data-src="" loading="lazy" onerror="this.style.display='none'">
         ${progressHtml}
       </div>
+      <input type="checkbox" class="file-select-checkbox" ${state.selectedFilePaths.has(f.path) ? 'checked' : ''} onclick="event.stopPropagation(); toggleFileSelection('${escapedPath}', this.checked)" title="Select item">
       <div class="file-icon">${icon}</div>
       <div class="file-info">
-        <div class="file-name${f.type === 'folder' ? ' folder' : ''}">${esc(f.name)}</div>
+        <div class="file-name${f.type === 'folder' ? ' folder' : ''}" title="${esc(f.name)}">${esc(f.name)}</div>
         <div class="file-meta">
-          <span>${formatBytes(f.size)}</span>
-          ${f.type === 'folder' ? `<span>${f.itemCount !== undefined ? f.itemCount + ' items' : 'Folder'}</span>` : `<span>${f.ext}</span>`}
+          ${f.type === 'folder' ? `<span>${esc(folderSize)}</span><span>${esc(folderItems)}</span>` : `<span>${formatBytes(f.size)}</span>`}
+          ${searchPath}
+          ${hiddenBadge}${protectedBadge}
         </div>
       </div>
-      ${actions}
-    </div>`;
-  }).join('');
+    </div>
+    <div class="file-col">${esc(typeLabel)}</div>
+    <div class="file-col">${f.type === 'folder' ? esc(folderSize) : formatBytes(f.size)}</div>
+    <div class="file-col" title="${esc(modified)}">${esc(modified)}</div>
+    ${actions}
+  </div>`;
+}
 
-  // Lazy load thumbnails for media files
-  if (isGrid) loadThumbnails(filtered);
+function jsArg(value) {
+  return esc(String(value || '')).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function fileIcon(f) {
+  if (f.type === 'folder') return '&#128193;';
+  if (f.type === 'video') return '&#127916;';
+  if (f.type === 'audio') return '&#127925;';
+  if (f.type === 'image') return '&#128247;';
+  if (f.type === 'subtitle') return '&#128196;';
+  if (f.type === 'torrent') return '&#8681;';
+  if (f.protected) return '&#128274;';
+  return '&#128196;';
+}
+
+function relativeToRoot(filePath) {
+  if (!state.fileRoot || !filePath) return '';
+  if (filePath === state.fileRoot) return '';
+  if (state.fileRoot === '/') return filePath.replace(/^\/+/, '');
+  return filePath.startsWith(state.fileRoot + '/') ? filePath.slice(state.fileRoot.length + 1) : filePath;
+}
+
+function dirnamePath(filePath) {
+  const value = String(filePath || '');
+  if (!value || value === '/') return state.fileRoot || '/';
+  const idx = value.lastIndexOf('/');
+  if (idx <= 0) return value.startsWith('/') ? '/' : (state.fileRoot || '/');
+  return value.slice(0, idx);
+}
+
+function pathHasHiddenSegment(filePath) {
+  return relativeToRoot(filePath).split('/').some(part => part.startsWith('.') && part.length > 1);
+}
+
+function scrollFileIntoView(filePath) {
+  requestAnimationFrame(() => {
+    const item = document.querySelector(`[data-file-hash="${fileHash(filePath)}"]`);
+    if (item) item.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function pathIsSameOrChild(filePath, parentPath) {
+  const parent = String(parentPath || '').replace(/\/+$/, '') || '/';
+  const child = String(filePath || '');
+  return child === parent || (parent === '/' ? child.startsWith('/') : child.startsWith(`${parent}/`));
+}
+
+function findFile(filePath) {
+  return state.files.find(f => f.path === filePath) || state.recursiveSearchResults.find(f => f.path === filePath);
+}
+
+function validateItemNameInput(name) {
+  const value = String(name || '').trim();
+  if (!value) throw new Error('Name is required.');
+  if (value === '.' || value === '..') throw new Error('Name cannot be "." or "..".');
+  if (value.includes('/') || value.includes('\\')) throw new Error('Name cannot contain path separators.');
+  return value;
+}
+
+function refreshFiles() {
+  loadFiles(null, { addHistory: false });
+}
+
+function goFileRoot() {
+  clearFileSearch();
+  if (state.fileRoot) loadFiles(state.fileRoot);
+}
+
+function clearFileSearch() {
+  state.fileSearch = '';
+  state.recursiveSearchResults = [];
+  state.recursiveSearchLoading = false;
+  const input = document.getElementById('file-search');
+  if (input) input.value = '';
+}
+
+function openFolder(filePath, clearSearch = false) {
+  if (clearSearch) clearFileSearch();
+  loadFiles(filePath);
+}
+
+function goFileUp() {
+  if (state.parentPath && state.currentPath !== state.fileRoot) loadFiles(state.parentPath);
+}
+
+function goFileBack() {
+  const previous = state.fileHistoryBack.pop();
+  if (!previous) return;
+  if (state.currentPath) state.fileHistoryForward.push(state.currentPath);
+  loadFiles(previous, { addHistory: false });
+}
+
+function goFileForward() {
+  const next = state.fileHistoryForward.pop();
+  if (!next) return;
+  if (state.currentPath) state.fileHistoryBack.push(state.currentPath);
+  loadFiles(next, { addHistory: false });
+}
+
+function toggleShowHidden(checked) {
+  state.showHidden = !!checked;
+  localStorage.setItem('cm_show_hidden', String(state.showHidden));
+  if (state.recursiveSearch && state.fileSearch.length >= 2) {
+    scheduleRecursiveSearch();
+  }
+  loadFiles(null, { addHistory: false });
+}
+
+function toggleRecursiveSearch(checked) {
+  state.recursiveSearch = !!checked;
+  localStorage.setItem('cm_recursive_search', String(state.recursiveSearch));
+  state.recursiveSearchResults = [];
+  if (state.recursiveSearch && state.fileSearch.length >= 2) scheduleRecursiveSearch();
+  else renderFiles();
+}
+
+function scheduleRecursiveSearch() {
+  clearTimeout(state.recursiveSearchTimer);
+  if (!state.recursiveSearch || state.fileSearch.length < 2) {
+    state.recursiveSearchLoading = false;
+    state.recursiveSearchResults = [];
+    renderFiles();
+    return;
+  }
+  state.recursiveSearchLoading = true;
+  renderFiles();
+  const query = state.fileSearch;
+  state.recursiveSearchTimer = setTimeout(() => loadRecursiveFileSearch(query), 250);
+}
+
+async function loadRecursiveFileSearch(query) {
+  try {
+    const params = new URLSearchParams({ q: query, showHidden: state.showHidden ? 'true' : 'false' });
+    const data = await api(`/api/search?${params.toString()}`);
+    if (query !== state.fileSearch) return;
+    state.recursiveSearchResults = (data.results || []).map((r) => {
+      const p = r.path || r.file_path || '';
+      const name = r.name || basename(p);
+      const ext = r.extension || (name.includes('.') ? name.slice(name.lastIndexOf('.')) : '');
+      return {
+        name,
+        path: p,
+        relativePath: relativeToRoot(p),
+        type: r.is_directory ? 'folder' : getFileType(ext || name),
+        ext,
+        size: r.size || 0,
+        mtime: r.mtime || 0,
+        modifiedAt: r.mtime ? new Date(r.mtime * 1000).toISOString() : '',
+        isHidden: name.startsWith('.') || relativeToRoot(p).split('/').some(part => part.startsWith('.')),
+        protected: !!r.protected,
+        searchResult: true,
+      };
+    });
+  } catch (e) {
+    state.recursiveSearchResults = [];
+  } finally {
+    if (query === state.fileSearch) {
+      state.recursiveSearchLoading = false;
+      renderFiles();
+    }
+  }
+}
+
+async function loadFileStorageSummary(force = false) {
+  const summary = document.getElementById('file-storage-summary');
+  if (!summary || !state.fileRoot) return;
+  const now = Date.now();
+  if (!force && state.storageSummaryLoaded && now - state.storageSummaryLoaded < 30000) return;
+  state.storageSummaryLoaded = now;
+  summary.innerHTML = '<div class="empty-state small"><p>Loading storage summary...</p></div>';
+  try {
+    const [stats, dirs] = await Promise.all([
+      api('/api/storage/stats'),
+      api(`/api/storage/dirs?path=${encodeURIComponent(state.fileRoot)}`),
+    ]);
+    const usedPct = stats.totalSpace ? Math.round((stats.usedSpace / stats.totalSpace) * 100) : 0;
+    const largestDirs = (dirs.dirs || []).slice(0, 5);
+    const largestFiles = (stats.largestFiles || []).slice(0, 5);
+    const largestRows = [
+      ...largestDirs.map(d => ({ ...d, kind: 'Folder' })),
+      ...largestFiles.map(f => ({ ...f, name: basename(f.path), kind: 'File' })),
+    ].sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 6);
+
+    summary.innerHTML = `
+      <div class="storage-overview">
+        <div class="storage-meter">
+          <div class="storage-meter-header">
+            <div>
+              <div class="storage-meter-title">${esc(state.fileRootLabel)}</div>
+              <div class="storage-meter-path">${esc(state.fileRoot)}</div>
+            </div>
+            <button class="btn-secondary btn-sm" onclick="goFileRoot()">Go to Root</button>
+          </div>
+          <div class="storage-meter-bar"><div style="width:${Math.min(100, usedPct)}%"></div></div>
+          <div class="storage-meter-meta">
+            <span>${formatBytes(stats.usedSpace)} used</span>
+            <span>${formatBytes(stats.freeSpace)} free</span>
+            <span>${formatBytes(stats.totalSpace)} total</span>
+          </div>
+        </div>
+        <div class="storage-quick-list">
+          <div class="storage-quick-title">Largest items</div>
+          ${largestRows.length ? largestRows.map(item => {
+            const p = jsArg(item.path);
+            return `<button class="storage-quick-row" onclick="openStorageItem('${p}', '${item.kind}')">
+              <span>
+                <strong>${esc(item.name || basename(item.path))}</strong>
+                <small>${esc(item.kind)} · ${esc(relativeToRoot(item.path))}</small>
+              </span>
+              <em>${formatBytes(item.size || 0)}</em>
+            </button>`;
+          }).join('') : '<div class="empty-state small"><p>No storage data yet.</p></div>'}
+        </div>
+      </div>`;
+  } catch (e) {
+    summary.innerHTML = `<div class="empty-state small"><p>Could not load storage summary.</p><p class="empty-hint">${esc(e.message)}</p></div>`;
+  }
+}
+
+async function openStorageItem(filePath, kind) {
+  showSection('library');
+  clearFileSearch();
+  if (pathHasHiddenSegment(filePath) && !state.showHidden) {
+    state.showHidden = true;
+    localStorage.setItem('cm_show_hidden', 'true');
+  }
+
+  try {
+    if (kind === 'Folder') {
+      await loadFiles(filePath);
+      toast(`Opened ${relativeToRoot(filePath) || filePath}`, 'info');
+    } else {
+      await navigateToFile(filePath);
+    }
+  } catch (e) {
+    toast(`Could not open ${filePath}: ${e.message}`, 'error');
+  }
 }
 
 async function loadThumbnails(files) {
@@ -635,7 +1142,12 @@ async function loadThumbnails(files) {
 
 function filterFiles(query) {
   state.fileSearch = query;
-  renderFiles();
+  if (state.recursiveSearch && query.length >= 2) scheduleRecursiveSearch();
+  else {
+    state.recursiveSearchLoading = false;
+    state.recursiveSearchResults = [];
+    renderFiles();
+  }
 }
 
 function filterFileType(type, btn) {
@@ -647,30 +1159,373 @@ function filterFileType(type, btn) {
 
 function toggleLibraryView() {
   state.libraryView = state.libraryView === 'list' ? 'grid' : 'list';
+  localStorage.setItem('cm_file_view', state.libraryView);
   renderFiles();
+}
+
+async function selectFile(filePath) {
+  let f = findFile(filePath);
+  if (!f) {
+    const name = basename(filePath);
+    const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+    f = {
+      name,
+      path: filePath,
+      relativePath: relativeToRoot(filePath),
+      type: getFileType(ext || name),
+      ext,
+      size: 0,
+      mtime: 0,
+      modifiedAt: '',
+      protected: false,
+    };
+  }
+  if (f.type === 'folder') return;
+  if (state.preview.unsaved && state.preview.filePath !== filePath && !confirm('Discard unsaved changes?')) return;
+  state.selectedFilePaths.clear();
+  state.selectedFile = f;
+  state.preview = { filePath, content: '', originalContent: '', unsaved: false, loading: true };
+  renderFiles();
+  renderSelectionBar();
+  renderPreviewLoading(f);
+
+  if (f.protected) {
+    state.preview.loading = false;
+    renderPreviewUnavailable(f, 'This file is protected and cannot be previewed or edited from Cast Manager.');
+    return;
+  }
+
+  try {
+    const data = await withPermissionRetry(
+      'File Access',
+      `Enter the server sudo password to preview ${f.name}.`,
+      (sudoPwd) => api(`/api/files/read?path=${encodeURIComponent(filePath)}`, { headers: sudoHeaders(sudoPwd), silent: true })
+    );
+    state.preview.loading = false;
+    if (data.previewAvailable) {
+      state.selectedFile = { ...f, ...(data.metadata || {}) };
+      state.preview.content = data.content || '';
+      state.preview.originalContent = data.content || '';
+      state.preview.unsaved = false;
+      renderPreviewEditor(f, data);
+    } else {
+      state.selectedFile = { ...f, ...(data.metadata || {}) };
+      renderPreviewUnavailable(f, data.message || 'Preview unavailable for this file type.', data);
+    }
+    renderSelectionBar();
+    renderFiles();
+    scrollFileIntoView(filePath);
+  } catch (e) {
+    state.preview.loading = false;
+    renderPreviewUnavailable(f, e.message || 'Could not read this file.');
+  }
+}
+
+function openSelectedFile(filePath) {
+  const f = findFile(filePath) || state.selectedFile;
+  if (!f) return;
+  if (f.type === 'video' || f.type === 'audio') openStreamPlayer(f.path, f.type);
+  else selectFile(f.path);
+}
+
+function clearFileSelection() {
+  state.selectedFile = null;
+  state.selectedFilePaths.clear();
+  state.preview = { filePath: '', content: '', originalContent: '', unsaved: false, loading: false };
+  const panel = document.getElementById('file-preview');
+  if (panel) {
+    panel.innerHTML = '<div class="empty-state small"><p>No file selected.</p><p class="empty-hint">Select a file to preview details.</p></div>';
+  }
+  renderSelectionBar();
+  renderFiles();
+}
+
+function getSelectedItems() {
+  const byPath = new Map([
+    ...state.files.map(f => [f.path, f]),
+    ...state.recursiveSearchResults.map(f => [f.path, f]),
+    ...state.visibleFiles.map(f => [f.path, f]),
+  ]);
+  return [...state.selectedFilePaths].map(path => byPath.get(path) || {
+    name: basename(path),
+    path,
+    type: 'file',
+  });
+}
+
+function toggleFileSelection(filePath, selected) {
+  if (selected) state.selectedFilePaths.add(filePath);
+  else state.selectedFilePaths.delete(filePath);
+  if (state.selectedFilePaths.size) state.selectedFile = null;
+  renderSelectionBar();
+  renderFiles();
+}
+
+function selectAllVisibleFiles() {
+  if (!state.visibleFiles.length) {
+    toast('No visible items to select', 'info');
+    return;
+  }
+  state.selectedFile = null;
+  state.selectedFilePaths = new Set(state.visibleFiles.map(f => f.path));
+  renderSelectionBar();
+  renderFiles();
+  toast(`Selected ${state.selectedFilePaths.size} item${state.selectedFilePaths.size === 1 ? '' : 's'}`, 'info');
+}
+
+function renderSelectionBar() {
+  const bar = document.getElementById('file-selection-bar');
+  if (!bar) return;
+  const selectedItems = getSelectedItems();
+  if (selectedItems.length) {
+    const totalSize = selectedItems.reduce((sum, item) => sum + (item.size || 0), 0);
+    bar.style.display = 'flex';
+    bar.innerHTML = `
+      <div class="selection-info">
+        <strong>${selectedItems.length} selected</strong>
+        <span>${formatBytes(totalSize)} total in current selection</span>
+      </div>
+      <div class="selection-actions">
+        <button class="btn-secondary btn-sm" onclick="clearFileSelection()">Clear</button>
+        <button class="btn-secondary btn-sm danger" onclick="deleteSelectedFiles(false)">Trash Selected</button>
+        <button class="btn-secondary btn-sm danger" onclick="deleteSelectedFiles(true)">Delete Now</button>
+      </div>`;
+    return;
+  }
+  const f = state.selectedFile;
+  if (!f) {
+    bar.style.display = 'none';
+    bar.innerHTML = '';
+    return;
+  }
+  const p = jsArg(f.path);
+  const n = jsArg(f.name);
+  bar.style.display = 'flex';
+  bar.innerHTML = `
+    <div class="selection-info">
+      <strong>${esc(f.name)}</strong>
+      <span>${esc(relativeToRoot(f.path) || f.path)}</span>
+    </div>
+    <div class="selection-actions">
+      <button class="btn-secondary btn-sm" onclick="openSelectedFile('${p}')">Open</button>
+      <button class="btn-secondary btn-sm" onclick="renameFile('${p}', '${n}')">Rename</button>
+      <button class="btn-secondary btn-sm" onclick="copyFile('${p}', '${n}')">Copy</button>
+      <button class="btn-secondary btn-sm" onclick="moveFile('${p}', '${n}')">Move</button>
+      ${f.type !== 'folder' && !f.protected ? `<button class="btn-secondary btn-sm" onclick="downloadFile('${p}')">Download</button>` : ''}
+      <button class="btn-secondary btn-sm" onclick="copyFileAddress('${p}')">Copy Address</button>
+      <button class="btn-secondary btn-sm danger" onclick="deleteFile('${p}', '${n}')">Trash</button>
+      <button class="btn-secondary btn-sm danger" onclick="deleteFileNow('${p}', '${n}')">Delete Now</button>
+    </div>`;
+}
+
+function renderPreviewLoading(f) {
+  const panel = document.getElementById('file-preview');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="preview-header">
+      <div class="preview-title">${esc(f.name)}</div>
+      <div class="preview-path">${esc(relativeToRoot(f.path))}</div>
+    </div>
+    <div class="empty-state small"><p>Loading preview...</p></div>`;
+}
+
+function renderPreviewMetadata(f, data = {}) {
+  const meta = data.metadata || f;
+  const modified = meta.modifiedAt ? new Date(meta.modifiedAt).toLocaleString() : (meta.mtime ? new Date(meta.mtime * 1000).toLocaleString() : '-');
+  return `<div class="preview-meta">
+    <div class="preview-meta-row"><span>Type</span><strong>${esc(meta.mimeType || meta.type || f.type || 'file')}</strong></div>
+    <div class="preview-meta-row"><span>Size</span><strong>${formatBytes(meta.size || f.size || 0)}</strong></div>
+    <div class="preview-meta-row"><span>Modified</span><strong>${esc(modified)}</strong></div>
+    <div class="preview-meta-row"><span>Path</span><strong>${esc(relativeToRoot(f.path))}</strong></div>
+  </div>`;
+}
+
+function renderPreviewUnavailable(f, message, data = {}) {
+  const panel = document.getElementById('file-preview');
+  if (!panel) return;
+  const mediaButtons = (f.type === 'video' || f.type === 'audio') && !f.protected
+    ? `<button class="btn-primary btn-sm" onclick="openStreamPlayer('${jsArg(f.path)}', '${f.type}')">Play</button>
+       <button class="btn-secondary btn-sm" onclick="openCastModal('${jsArg(f.path)}', '${f.type}')">Cast</button>`
+    : '';
+  const imagePreview = f.type === 'image' && !f.protected && !data.tooLarge
+    ? `<img src="/api/files/stream?path=${encodeURIComponent(f.path)}&raw=1" alt="${esc(f.name)}" style="width:100%;border-radius:var(--radius-md);border:1px solid var(--color-border);margin-bottom:12px">`
+    : '';
+  panel.innerHTML = `
+    <div class="preview-header">
+      <div class="preview-title">${esc(f.name)}</div>
+      <div class="preview-path">${esc(relativeToRoot(f.path))}</div>
+    </div>
+    <div class="preview-body">
+      ${imagePreview}
+      ${renderPreviewMetadata(f, data)}
+      <p style="font-size:13px;color:var(--color-text-tertiary);line-height:1.5">${esc(message)}</p>
+      <div class="preview-actions">
+        ${mediaButtons}
+        ${!f.protected ? `<button class="btn-secondary btn-sm" onclick="downloadFile('${jsArg(f.path)}')">Download</button>` : ''}
+        <button class="btn-secondary btn-sm" onclick="copyFileAddress('${jsArg(f.path)}')">Copy Address</button>
+      </div>
+    </div>`;
+}
+
+function renderPreviewEditor(f, data) {
+  const panel = document.getElementById('file-preview');
+  if (!panel) return;
+  panel.innerHTML = `
+    <div class="preview-header">
+      <div class="preview-title">${esc(f.name)}</div>
+      <div class="preview-path">${esc(relativeToRoot(f.path))}</div>
+    </div>
+    <div class="preview-body">
+      ${renderPreviewMetadata(f, data)}
+      <textarea id="preview-editor" class="preview-editor" spellcheck="false" oninput="markPreviewUnsaved()">${esc(data.content || '')}</textarea>
+      <div class="preview-actions">
+        <button class="btn-primary btn-sm" id="preview-save-btn" onclick="savePreviewFile()" disabled>Save</button>
+        <span class="unsaved-indicator" id="preview-unsaved" style="display:none">Unsaved changes</span>
+        <button class="btn-secondary btn-sm" onclick="copyFileAddress('${jsArg(f.path)}')">Copy Address</button>
+        <button class="btn-secondary btn-sm" onclick="downloadFile('${jsArg(f.path)}')">Download</button>
+      </div>
+    </div>`;
+}
+
+function markPreviewUnsaved() {
+  const editor = document.getElementById('preview-editor');
+  if (!editor) return;
+  state.preview.content = editor.value;
+  state.preview.unsaved = state.preview.content !== state.preview.originalContent;
+  const saveBtn = document.getElementById('preview-save-btn');
+  const indicator = document.getElementById('preview-unsaved');
+  if (saveBtn) saveBtn.disabled = !state.preview.unsaved;
+  if (indicator) indicator.style.display = state.preview.unsaved ? 'inline' : 'none';
+}
+
+async function savePreviewFile() {
+  if (!state.preview.filePath || !state.preview.unsaved) return;
+  const editor = document.getElementById('preview-editor');
+  const content = editor ? editor.value : state.preview.content;
+  try {
+    await withPermissionRetry(
+      'Save File',
+      `Enter the server sudo password to save ${basename(state.preview.filePath)}.`,
+      (sudoPwd) => api('/api/files/write', {
+        method: 'POST',
+        body: withSudoBody({ filePath: state.preview.filePath, content }, sudoPwd),
+        silent: true,
+      })
+    );
+    state.preview.originalContent = content;
+    state.preview.content = content;
+    state.preview.unsaved = false;
+    markPreviewUnsaved();
+    toast('File saved', 'success');
+    loadFiles(null, { addHistory: false });
+  } catch (e) { /* already toasted */ }
 }
 
 // ─── File Operations ─────────────────────────────────────────
 function deleteFile(filePath, fileName) {
-  showPasswordPrompt('Delete File', `Enter sudo password to permanently delete "${fileName}":`, async (sudoPwd) => {
+  const f = findFile(filePath);
+  const kind = f?.type === 'folder' ? 'folder and its contents' : 'file';
+  showConfirm('Move to Trash', `Move "${fileName}" to trash? This ${kind} will disappear from the current folder and can be restored from Trash.`, async () => {
     try {
-      await api('/api/files/delete', { method: 'POST', body: { filePath, sudoPwd } });
-      toast(`Deleted: ${fileName}`, 'success');
-      loadFiles();
+      await withPermissionRetry(
+        'Move to Trash',
+        `Enter the server sudo password to move ${fileName} to trash.`,
+        (sudoPwd) => api('/api/files/delete', {
+          method: 'POST',
+          body: withSudoBody({ filePath }, sudoPwd),
+          silent: true,
+        })
+      );
+      if (state.selectedFile?.path === filePath) clearFileSelection();
+      toast(`Moved to trash: ${fileName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(null, { addHistory: false });
     } catch (e) { /* already toasted */ }
+  });
+}
+
+function deleteFileNow(filePath, fileName) {
+  const f = findFile(filePath);
+  const kind = f?.type === 'folder' ? 'folder and all of its contents' : 'file';
+  showConfirm('Delete Immediately', `Permanently delete "${fileName}" now? This ${kind} will not go to Trash and cannot be restored from Cast Manager.`, async () => {
+    try {
+      await withPermissionRetry(
+        'Delete Immediately',
+        `Enter the server sudo password to permanently delete ${fileName}.`,
+        (sudoPwd) => api('/api/files/delete', {
+          method: 'POST',
+          body: withSudoBody({ filePath, permanent: true }, sudoPwd),
+          silent: true,
+        })
+      );
+      if (state.selectedFile && pathIsSameOrChild(state.selectedFile.path, filePath)) clearFileSelection();
+      state.selectedFilePaths.delete(filePath);
+      toast(`Permanently deleted: ${fileName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(null, { addHistory: false });
+    } catch (e) { /* already toasted */ }
+  });
+}
+
+async function deleteSelectedFiles(permanent = false) {
+  const selectedItems = getSelectedItems();
+  if (!selectedItems.length) return;
+  const title = permanent ? 'Delete Selected Immediately' : 'Move Selected to Trash';
+  const message = permanent
+    ? `Permanently delete ${selectedItems.length} selected item${selectedItems.length === 1 ? '' : 's'} now? They will not go to Trash and cannot be restored from Cast Manager.`
+    : `Move ${selectedItems.length} selected item${selectedItems.length === 1 ? '' : 's'} to Trash?`;
+  showConfirm(title, message, async () => {
+    let deleted = 0;
+    const failures = [];
+    for (const item of selectedItems) {
+      try {
+        await withPermissionRetry(
+          permanent ? 'Delete Immediately' : 'Move to Trash',
+          `Enter the server sudo password to ${permanent ? 'permanently delete' : 'move'} ${item.name}.`,
+          (sudoPwd) => api('/api/files/delete', {
+            method: 'POST',
+            body: withSudoBody({ filePath: item.path, permanent }, sudoPwd),
+            silent: true,
+          })
+        );
+        deleted++;
+        state.selectedFilePaths.delete(item.path);
+      } catch (e) {
+        failures.push(`${item.name}: ${e.message}`);
+      }
+    }
+    if (state.selectedFile && selectedItems.some(item => pathIsSameOrChild(state.selectedFile.path, item.path))) {
+      clearFileSelection();
+    }
+    state.storageSummaryLoaded = 0;
+    await loadFiles(null, { addHistory: false });
+    if (deleted) toast(`${permanent ? 'Deleted' : 'Moved to trash'} ${deleted} item${deleted === 1 ? '' : 's'}`, 'success');
+    if (failures.length) toast(`${failures.length} item${failures.length === 1 ? '' : 's'} failed`, 'error');
   });
 }
 
 function renameFile(filePath, currentName) {
   const newName = prompt('Rename to:', currentName);
   if (!newName || newName === currentName) return;
-  showPasswordPrompt('Rename File', `Enter sudo password to rename to "${newName}":`, async (sudoPwd) => {
+  let safeName;
+  try { safeName = validateItemNameInput(newName); }
+  catch (e) { toast(e.message, 'error'); return; }
+  (async () => {
     try {
-      await api('/api/files/rename', { method: 'POST', body: { oldPath: filePath, newName, sudoPwd } });
-      toast(`Renamed to: ${newName}`, 'success');
-      loadFiles();
+      const data = await withPermissionRetry(
+        'Rename Item',
+        `Enter the server sudo password to rename ${currentName}.`,
+        (sudoPwd) => api('/api/files/rename', {
+          method: 'POST',
+          body: withSudoBody({ oldPath: filePath, newName: safeName }, sudoPwd),
+          silent: true,
+        })
+      );
+      if (state.selectedFile?.path === filePath) state.selectedFile.path = data.newPath;
+      toast(`Renamed to: ${safeName}`, 'success');
+      loadFiles(null, { addHistory: false });
     } catch (e) { /* already toasted */ }
-  });
+  })();
 }
 
 function copyFile(filePath, currentName) {
@@ -678,14 +1533,26 @@ function copyFile(filePath, currentName) {
   const base = currentName.lastIndexOf('.') > 0 ? currentName.slice(0, currentName.lastIndexOf('.')) : currentName;
   const destName = prompt('Copy as:', `${base} (copy)${ext}`);
   if (!destName) return;
-  showPasswordPrompt('Copy File', `Enter sudo password to copy as "${destName}":`, async (sudoPwd) => {
+  let safeName;
+  try { safeName = validateItemNameInput(destName); }
+  catch (e) { toast(e.message, 'error'); return; }
+  (async () => {
     try {
-      toast('Copying file...', 'info');
-      await api('/api/files/copy', { method: 'POST', body: { filePath, destName, sudoPwd } });
-      toast(`Copied as: ${destName}`, 'success');
-      loadFiles();
+      toast('Copying...', 'info');
+      await withPermissionRetry(
+        'Copy Item',
+        `Enter the server sudo password to copy ${currentName}.`,
+        (sudoPwd) => api('/api/files/copy', {
+          method: 'POST',
+          body: withSudoBody({ filePath, destName: safeName }, sudoPwd),
+          silent: true,
+        })
+      );
+      toast(`Copied as: ${safeName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(null, { addHistory: false });
     } catch (e) { /* already toasted */ }
-  });
+  })();
 }
 
 function downloadFile(filePath) {
@@ -696,6 +1563,26 @@ function downloadFile(filePath) {
   a.click();
   document.body.removeChild(a);
   toast('Download started', 'info');
+}
+
+async function copyRelativePath(filePath) {
+  const rel = relativeToRoot(filePath);
+  try {
+    await navigator.clipboard.writeText(rel || filePath);
+    toast('Path copied', 'success');
+  } catch (_) {
+    toast(rel || filePath, 'info', 6000);
+  }
+}
+
+async function copyFileAddress(filePath) {
+  const address = String(filePath || '');
+  try {
+    await navigator.clipboard.writeText(address);
+    toast('File address copied', 'success');
+  } catch (_) {
+    toast(address, 'info', 6000);
+  }
 }
 
 // ─── Stream Player ──────────────────────────────────────────
@@ -729,6 +1616,23 @@ function openStreamPlayer(filePath, type) {
     videoContainer.style.display = 'block';
     audioContainer.style.display = 'none';
     video.src = streamUrl;
+    // Add a <track> if subtitles exist (served as WebVTT via /api/subtitles/:id.vtt).
+    // This does not affect Chromecast; it's for the in-browser stream player only.
+    try {
+      // Remove prior tracks
+      Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+      api('/api/subtitles', { method: 'POST', body: { filePath } }).then((subData) => {
+        const first = (subData?.subtitles || []).find(s => typeof s === 'object' && s.id) || null;
+        if (!first?.id) return;
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = first.label || 'Subtitles';
+        track.srclang = 'en';
+        track.src = `/api/subtitles/${encodeURIComponent(first.id)}.vtt`;
+        track.default = true;
+        video.appendChild(track);
+      }).catch(() => {});
+    } catch (_) { /* ignore */ }
     // Handle autoplay restriction
     video.play().catch(() => {
       // Show click-to-play overlay
@@ -775,7 +1679,7 @@ async function copyStreamUrl(filePath) {
     const data = await api('/api/stream/generate', { method: 'POST', body: { filePath, expiresIn: 24 } });
     if (data.streamUrl) {
       await navigator.clipboard.writeText(data.streamUrl);
-      toast('Stream URL copied! Works in VLC, browser, or any player.', 'success');
+      toast('Browser player URL copied', 'success');
     }
   } catch (e) {
     // Fallback to internal URL
@@ -801,10 +1705,12 @@ async function generateStreamUrlForCurrent() {
       // Show stream URL panel inside stream player modal
       const panel = document.getElementById('stream-url-panel');
       const input = document.getElementById('stream-url-input');
+      const directInput = document.getElementById('stream-direct-url-input');
       const openLink = document.getElementById('stream-url-open');
       const expiresDiv = document.getElementById('stream-url-expires');
       panel.style.display = 'block';
       input.value = data.streamUrl;
+      if (directInput) directInput.value = data.directUrl || data.streamUrl;
       openLink.href = data.streamUrl;
       expiresDiv.textContent = `Expires: ${new Date(data.expiresAt).toLocaleString()}`;
       toast('Stream URL generated!', 'success');
@@ -825,6 +1731,17 @@ function copyStreamUrlFromInput() {
   });
 }
 
+function copyDirectStreamUrlFromInput() {
+  const input = document.getElementById('stream-direct-url-input');
+  navigator.clipboard.writeText(input.value).then(() => {
+    toast('Direct stream URL copied!', 'success');
+  }).catch(() => {
+    input.select();
+    document.execCommand('copy');
+    toast('Direct stream URL copied!', 'success');
+  });
+}
+
 // Show standalone Stream URL modal from file list
 async function showStreamUrlModal(filePath) {
   try {
@@ -832,6 +1749,7 @@ async function showStreamUrlModal(filePath) {
     const modal = document.getElementById('stream-url-modal');
     document.getElementById('stream-url-modal-filename').textContent = basename(filePath);
     document.getElementById('stream-url-modal-input').value = data.streamUrl;
+    document.getElementById('stream-url-modal-direct-input').value = data.directUrl || data.streamUrl;
     document.getElementById('stream-url-modal-open').href = data.streamUrl;
     document.getElementById('stream-url-modal-expires').textContent = `Expires: ${new Date(data.expiresAt).toLocaleString()}`;
     // Load QR code
@@ -876,51 +1794,131 @@ async function loadCodecInfo(filePath) {
 function createNewFolder() {
   const name = prompt('New folder name:');
   if (!name) return;
+  let safeName;
+  try { safeName = validateItemNameInput(name); }
+  catch (e) { toast(e.message, 'error'); return; }
   (async () => {
     try {
-      await api('/api/files/mkdir', { method: 'POST', body: { parentPath: state.currentPath, name } });
-      toast(`Created folder: ${name}`, 'success');
-      loadFiles();
+      await withPermissionRetry(
+        'Create Folder',
+        `Enter the server sudo password to create a folder in ${state.currentPath || 'this location'}.`,
+        (sudoPwd) => api('/api/files/mkdir', {
+          method: 'POST',
+          body: withSudoBody({ parentPath: state.currentPath, name: safeName }, sudoPwd),
+          silent: true,
+        })
+      );
+      toast(`Created folder: ${safeName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(null, { addHistory: false });
+    } catch (e) { /* already toasted */ }
+  })();
+}
+
+function createNewFile() {
+  const name = prompt('New file name:', 'untitled.txt');
+  if (!name) return;
+  let safeName;
+  try { safeName = validateItemNameInput(name); }
+  catch (e) { toast(e.message, 'error'); return; }
+  (async () => {
+    try {
+      const data = await withPermissionRetry(
+        'Create File',
+        `Enter the server sudo password to create a file in ${state.currentPath || 'this location'}.`,
+        (sudoPwd) => api('/api/files/create', {
+          method: 'POST',
+          body: withSudoBody({ parentPath: state.currentPath, name: safeName }, sudoPwd),
+          silent: true,
+        })
+      );
+      toast(`Created file: ${safeName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      await loadFiles(null, { addHistory: false });
+      if (data.path) selectFile(data.path);
     } catch (e) { /* already toasted */ }
   })();
 }
 
 // ─── Delete Current Folder ──────────────────────────────────
 function deleteCurrentFolder() {
-  if (state.currentPath === '/home/REDACTED_USER/watch_list' || state.currentPath === '/home/REDACTED_USER/watch_list/') {
-    return toast('Cannot delete the root download directory.', 'warning');
+  if (!state.currentPath || state.currentPath === state.fileRoot) {
+    return toast('Cannot delete the file-manager root.', 'warning');
   }
   const folderName = basename(state.currentPath);
-  showPasswordPrompt('Delete Folder', `Enter sudo password to permanently delete the current folder "${folderName}":`, async (sudoPwd) => {
+  showConfirm('Move Folder to Trash', `Move the current folder "${folderName}" and all of its contents to trash?`, async () => {
     try {
-      await api('/api/files/delete', { method: 'POST', body: { filePath: state.currentPath, sudoPwd } });
-      toast(`Deleted: ${folderName}`, 'success');
-      // Go up one directory level
-      const parts = state.currentPath.split('/').filter(Boolean);
-      parts.pop();
-      const parent = parts.join('/') || '/home/REDACTED_USER/watch_list';
-      // Ensure absolute path formatting
-      loadFiles(parent.startsWith('/') ? parent : '/' + parent);
+      const parent = state.parentPath || state.fileRoot;
+      await withPermissionRetry(
+        'Move Folder to Trash',
+        `Enter the server sudo password to move ${folderName} to trash.`,
+        (sudoPwd) => api('/api/files/delete', {
+          method: 'POST',
+          body: withSudoBody({ filePath: state.currentPath }, sudoPwd),
+          silent: true,
+        })
+      );
+      clearFileSelection();
+      toast(`Moved to trash: ${folderName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(parent, { addHistory: false });
+    } catch (e) { /* already toasted */ }
+  });
+}
+
+function deleteCurrentFolderNow() {
+  if (!state.currentPath || state.currentPath === state.fileRoot) {
+    return toast('Cannot delete the file-manager root.', 'warning');
+  }
+  const folderName = basename(state.currentPath);
+  showConfirm('Delete Folder Immediately', `Permanently delete the current folder "${folderName}" and all of its contents now? It will not go to Trash and cannot be restored from Cast Manager.`, async () => {
+    try {
+      const folderPath = state.currentPath;
+      const parent = state.parentPath || state.fileRoot;
+      await withPermissionRetry(
+        'Delete Folder Immediately',
+        `Enter the server sudo password to permanently delete ${folderName}.`,
+        (sudoPwd) => api('/api/files/delete', {
+          method: 'POST',
+          body: withSudoBody({ filePath: folderPath, permanent: true }, sudoPwd),
+          silent: true,
+        })
+      );
+      clearFileSelection();
+      toast(`Permanently deleted: ${folderName}`, 'success');
+      state.storageSummaryLoaded = 0;
+      loadFiles(parent, { addHistory: false });
     } catch (e) { /* already toasted */ }
   });
 }
 
 // ─── Move File ──────────────────────────────────────────────
 function moveFile(filePath, fileName) {
-  const dest = prompt('Move to directory (full path):', state.currentPath);
+  const dest = prompt(`Move "${fileName}" to directory:`, state.currentPath);
   if (!dest || dest === state.currentPath) return;
-  showPasswordPrompt('Move File', `Enter sudo password to move to "${dest}":`, async (sudoPwd) => {
+  (async () => {
     try {
-      await api('/api/files/move', { method: 'POST', body: { sourcePath: filePath, destDir: dest, sudoPwd } });
+      await withPermissionRetry(
+        'Move Item',
+        `Enter the server sudo password to move ${fileName}.`,
+        (sudoPwd) => api('/api/files/move', {
+          method: 'POST',
+          body: withSudoBody({ sourcePath: filePath, destDir: dest }, sudoPwd),
+          silent: true,
+        })
+      );
+      if (state.selectedFile?.path === filePath) clearFileSelection();
       toast(`Moved: ${fileName}`, 'success');
-      loadFiles();
+      state.storageSummaryLoaded = 0;
+      loadFiles(null, { addHistory: false });
     } catch (e) { /* already toasted */ }
-  });
+  })();
 }
 
 // ─── Sort Files ─────────────────────────────────────────────
 function sortFiles(sortBy) {
   state.fileSort = sortBy;
+  localStorage.setItem('cm_file_sort', sortBy);
   renderFiles();
 }
 
@@ -935,6 +1933,10 @@ async function openCastModal(filePath, type) {
 
   document.getElementById('cast-modal-filename').textContent = name;
   document.getElementById('cast-seek-input').value = '00:00:00';
+  renderCastDevices();
+  updateCastPipelinePreview(filePath);
+  const customSubtitleInput = document.getElementById('custom-subtitle-path');
+  if (customSubtitleInput) customSubtitleInput.value = '';
 
   // Get duration
   try {
@@ -962,15 +1964,22 @@ async function openCastModal(filePath, type) {
       const subData = await api('/api/subtitles', { method: 'POST', body: { filePath } });
       const subSection = document.getElementById('subtitle-section');
       const subSelect = document.getElementById('subtitle-select');
+      subSection.style.display = 'block';
       if (subData.subtitles && subData.subtitles.length > 0) {
-        subSection.style.display = 'block';
+        // subtitles can be strings (legacy) or objects { id, label, ... }
         subSelect.innerHTML = '<option value="">None</option>' +
-          subData.subtitles.map(s => `<option value="${esc(s)}">${esc(basename(s))}</option>`).join('');
+          subData.subtitles.map((s) => {
+            if (typeof s === 'string') return `<option value="${esc(s)}">${esc(basename(s))}</option>`;
+            const val = s.id || '';
+            const label = s.label || (s.sourcePath ? basename(s.sourcePath) : `Subtitle ${val}`);
+            return `<option value="${esc(val)}">${esc(label)}</option>`;
+          }).join('');
       } else {
-        subSection.style.display = 'none';
+        subSelect.innerHTML = '<option value="">None detected</option>';
       }
     } catch (e) {
-      document.getElementById('subtitle-section').style.display = 'none';
+      document.getElementById('subtitle-section').style.display = 'block';
+      document.getElementById('subtitle-select').innerHTML = '<option value="">None detected</option>';
     }
   } else {
     document.getElementById('subtitle-section').style.display = 'none';
@@ -997,22 +2006,69 @@ function resumeCast() {
   confirmCast();
 }
 
+async function updateCastPipelinePreview(filePath) {
+  const el = document.getElementById('cast-pipeline-label');
+  if (!el) return;
+  el.textContent = 'Analyzing...';
+  try {
+    const provider = state.selectedCastDevice?.provider || 'chromecast';
+    const mode = document.getElementById('cast-mode-select')?.value || 'auto';
+    const data = await api('/api/media/analyze', {
+      method: 'POST',
+      body: { filePath, target: provider, mode, autoTranscode: state.settings?.autoTranscode || 'auto' },
+      silent: true,
+    });
+    const pipeline = data.pipelineMode || data.analysis?.recommendedPipeline || 'auto';
+    const reasons = (data.analysis?.reasons || []).slice(0, 2).join(' ');
+    el.textContent = `${pipeline}${reasons ? ` · ${reasons}` : ''}`;
+  } catch (e) {
+    el.textContent = 'Automatic compatibility mode';
+  }
+}
+
+async function prepareCustomSubtitleForCast() {
+  const file = state.castModalFile;
+  const input = document.getElementById('custom-subtitle-path');
+  const subtitlePath = input?.value.trim() || '';
+  if (!file) return toast('Choose a video first.', 'warning');
+  if (!subtitlePath) return toast('Enter a server subtitle path first.', 'warning');
+  try {
+    await api('/api/subtitles/prepare', { method: 'POST', body: { filePath: file.path, subtitlePath } });
+    toast('Subtitle path is valid and can be cast.', 'success');
+  } catch (e) {
+    toast(`Subtitle check failed: ${e.message}`, 'error', 6000);
+  }
+}
+
 async function confirmCast() {
   if (!state.castModalFile) return;
   const seekTo = document.getElementById('cast-seek-input').value;
-  const subtitlePath = document.getElementById('subtitle-select')?.value || '';
+  const subtitleChoice = document.getElementById('subtitle-select')?.value || '';
+  const customSubtitlePath = document.getElementById('custom-subtitle-path')?.value.trim() || '';
   const filePath = state.castModalFile.path;
+  const autoTranscode = state.settings?.autoTranscode || 'auto';
+  const allowPretranscode = state.settings?.allowPretranscode === true;
+  const selected = state.selectedCastDevice || {};
+  const mode = document.getElementById('cast-mode-select')?.value || 'auto';
 
   closeCastModal();
   toast('Casting...', 'info');
 
   try {
-    let endpoint = '/api/cast';
-    let body = { filePath, seekTo: seekTo !== '00:00:00' ? seekTo : undefined };
+    let endpoint = '/api/cast/start';
+    let body = {
+      filePath,
+      seekTo: seekTo !== '00:00:00' ? seekTo : undefined,
+      autoTranscode,
+      mode,
+      provider: selected.provider || 'chromecast',
+      deviceId: selected.device_id || selected.id,
+      ...(allowPretranscode ? { allowPretranscode: true } : {}),
+    };
 
-    if (subtitlePath) {
-      endpoint = '/api/cast/subtitles';
-      body.subtitlePath = subtitlePath;
+    if (customSubtitlePath || subtitleChoice) {
+      if (customSubtitlePath) body.subtitlePath = customSubtitlePath;
+      else body.subtitleId = subtitleChoice;
     }
 
     const data = await api(endpoint, { method: 'POST', body });
@@ -1020,31 +2076,44 @@ async function confirmCast() {
     if (data.transcoding) {
       toast(data.message, 'warning', 8000);
       // Poll for transcoding completion
-      pollTranscode(filePath, seekTo);
+      pollTranscode(filePath, seekTo, data.jobId);
       return;
     }
 
     state.casting.filePath = filePath;
     state.casting.title = basename(filePath);
     state.casting.state = 'playing';
-    toast('Casting started', 'success');
+    if (data.provider || data.pipelineMode) {
+      state.casting.provider = data.provider;
+      state.casting.pipelineMode = data.pipelineMode;
+    }
+    toast(`Casting started${data.pipelineMode ? ` (${data.pipelineMode})` : ''}`, 'success');
     showMiniPlayer();
     updatePositionEntry(filePath);
     startCastPolling();
   } catch (e) { /* already toasted */ }
 }
 
-async function pollTranscode(filePath, seekTo) {
+async function pollTranscode(filePath, seekTo, jobId) {
   let attempts = 0;
   const maxAttempts = 200; // ~10 minutes at 3s intervals
   const check = async () => {
     attempts++;
     try {
-      const data = await api('/api/transcode/status', { method: 'POST', body: { filePath } });
+      const body = jobId ? { filePath, jobId } : { filePath };
+      const data = await api('/api/transcode/status', { method: 'POST', body });
       if (data.ready) {
         toast('Transcoding complete! Casting now...', 'success');
         try {
-          await api('/api/cast', { method: 'POST', body: { filePath, seekTo } });
+          await api('/api/cast', {
+            method: 'POST',
+            body: {
+              filePath,
+              seekTo,
+              autoTranscode: state.settings?.autoTranscode || 'auto',
+              ...(state.settings?.allowPretranscode === true ? { allowPretranscode: true } : {}),
+            },
+          });
           state.casting.filePath = filePath;
           state.casting.title = basename(filePath);
           state.casting.state = 'playing';
@@ -1125,13 +2194,66 @@ function stopCastPolling() {
   clearInterval(state.pollingTimers.positionSave);
 }
 
+function isConfirmedNaturalEnd(info) {
+  const now = nowMs();
+  const duration = Number(info?.duration || state.casting.duration || 0);
+  const currentTime = Number(info?.currentTime || state.casting.currentTime || 0);
+
+  const activeSession = Boolean(info?.activeSession);
+  const fallbackAvailable = Boolean(info?.fallbackAvailable);
+  const stateName = info?.state || state.casting.state;
+
+  const nearEnd = duration > 0 && currentTime >= duration - 5;
+  const recentCommand = now - (state.casting.lastCommandAt || 0) < 5000;
+  const recentSeek = now - (state.casting.lastSeekAt || 0) < 5000;
+  const recentStop = now - (state.casting.lastStopAt || 0) < 4000;
+  const settling = now < (state.castControl?.settleUntil || 0);
+  const transitionalState = ['starting', 'seeking', 'pausing', 'resuming', 'stopping', 'buffering'].includes(state.casting.state);
+
+  return stateName === 'idle' &&
+    !activeSession &&
+    !fallbackAvailable &&
+    nearEnd &&
+    !recentCommand &&
+    !recentSeek &&
+    !recentStop &&
+    !settling &&
+    !state.isDraggingScrubber &&
+    !transitionalState &&
+    (state.castControl?.idleStreak || 0) >= 2;
+}
+
 async function pollCastStatus() {
   if (state.isDraggingScrubber) return;
+  if (shouldIgnorePollUpdate()) return;
   try {
     const info = await api('/api/cast/status');
-    state.casting.state = info.state || 'idle';
-    state.casting.currentTime = info.currentTime || 0;
-    state.casting.duration = info.duration || 0;
+    state.casting.lastStatusAt = nowMs();
+
+    const recentlyStopped = nowMs() - (state.casting.lastStopAt || 0) < 4000;
+    if (recentlyStopped && info && info.activeSession) {
+      // Treat as stale backend/receiver status immediately after explicit stop.
+      return;
+    }
+
+    const receiverReachable = info && info.receiverReachable !== false;
+    const success = !!(info && info.success !== false);
+
+    if (!receiverReachable || !success) {
+      state.casting.receiverReachable = false;
+      state.casting.consecutiveStatusFailures++;
+      // Never hide mini-player based on a failed/unreachable poll.
+      if (info && info.activeSession) showMiniPlayer();
+      return;
+    }
+
+    state.casting.receiverReachable = true;
+    state.casting.consecutiveStatusFailures = 0;
+    state.casting.lastNormalizedStatus = info;
+
+    state.casting.state = info.state || 'unknown';
+    state.casting.currentTime = Number.isFinite(info.currentTime) ? info.currentTime : 0;
+    state.casting.duration = Number.isFinite(info.duration) ? info.duration : 0;
     if (info.title) state.casting.title = info.title;
     if (info.volumeLevel !== undefined) state.casting.volume = info.volumeLevel;
 
@@ -1143,8 +2265,24 @@ async function pollCastStatus() {
       showMiniPlayer();
     }
 
-    // Check if playback ended for auto-advance
-    if (info.state === 'idle' && state.casting.filePath) {
+    // If backend thinks there's an active session, don't hide mini-player just because
+    // receiver status momentarily reports idle (e.g. during seek fallback restart).
+    if ((info.state === 'idle' || info.state === 'unknown') && info.activeSession) {
+      showMiniPlayer();
+    }
+
+    // Track last "active" signal for robust idle handling
+    if (info.state && info.state !== 'idle') {
+      state.castControl.idleStreak = 0;
+      state.castControl.lastNonIdleAt = nowMs();
+      state.castControl.lastKnownTime = info.currentTime || state.castControl.lastKnownTime || 0;
+      state.castControl.lastKnownDuration = info.duration || state.castControl.lastKnownDuration || 0;
+    } else {
+      state.castControl.idleStreak++;
+    }
+
+    // Natural-end gate (single source of truth)
+    if (isConfirmedNaturalEnd(info) && state.casting.filePath) {
       saveCurrentPosition();
       if (state.queueIndex >= 0) {
         handlePlaybackEnded();
@@ -1166,38 +2304,111 @@ function updateDeviceIndicator() {
 // ─── Playback Controls ─────────────────────────────────────
 async function togglePlayPause() {
   const action = state.casting.state === 'playing' ? 'pause' : 'play';
-  await api('/api/cast/controls', { method: 'POST', body: { action } });
-  state.casting.state = action === 'pause' ? 'paused' : 'playing';
-  updateMiniPlayer();
+  const cmdId = markCastCommand(action === 'pause' ? 'pause' : 'resume');
+  beginCastCommand(action, 1000);
+  try {
+    const result = await api('/api/cast/controls', { method: 'POST', body: { action } });
+    if (!isCurrentCastCommand(cmdId)) return;
+    if (result && result.state) state.casting.state = result.state;
+    else state.casting.state = action === 'pause' ? 'paused' : 'playing';
+    updateMiniPlayer();
+  } finally {
+    endCastCommand();
+  }
 }
 
 async function stopPlayback() {
-  await api('/api/cast/controls', { method: 'POST', body: { action: 'stop' } });
+  const cmdId = markCastCommand('stop');
+  beginCastCommand('stop', 1500);
+  try {
+    await api('/api/cast/controls', { method: 'POST', body: { action: 'stop' } });
+  } finally {
+    endCastCommand();
+  }
+  if (!isCurrentCastCommand(cmdId)) return;
   saveCurrentPosition();
   state.casting.state = 'idle';
   state.casting.currentTime = 0;
+  state.casting.receiverReachable = true;
+  state.casting.consecutiveStatusFailures = 0;
+  state.castControl.idleStreak = 0;
   hideMiniPlayer();
   stopCastPolling();
 }
 
 async function seekRelative(delta) {
   const newTime = Math.max(0, state.casting.currentTime + delta);
-  await api('/api/cast/controls', { method: 'POST', body: { action: 'seek', value: Math.floor(newTime) } });
-  state.casting.currentTime = newTime;
-  updateMiniPlayer();
+  requestSeekTo(newTime, { settleMs: 1200 });
 }
 
 async function seekTo(seconds) {
-  await api('/api/cast/controls', { method: 'POST', body: { action: 'seek', value: Math.floor(seconds) } });
-  state.casting.currentTime = seconds;
+  requestSeekTo(seconds, { settleMs: 1200 });
+}
+
+function scheduleSeekDispatch(delayMs = 180) {
+  if (state.castControl.seekDebounceTimer) clearTimeout(state.castControl.seekDebounceTimer);
+  state.castControl.seekDebounceTimer = setTimeout(dispatchQueuedSeek, delayMs);
+}
+
+async function dispatchQueuedSeek() {
+  const val = state.castControl.lastSeekTarget;
+  if (val == null) return;
+
+  if (state.castControl.seekInFlight) {
+    state.castControl.seekQueued = true;
+    return;
+  }
+
+  const cmdId = state.casting.lastCommandId;
+  const settleMs = state.castControl.seekSettleMs || 1200;
+  state.castControl.seekQueued = false;
+  state.castControl.seekInFlight = true;
+  beginCastCommand('seek', settleMs);
+  try {
+    const res = await api('/api/cast/controls', { method: 'POST', body: { action: 'seek', value: val } });
+    if (!isCurrentCastCommand(cmdId)) return;
+    if (res && res.state) state.casting.state = res.state;
+  } catch (e) {
+    // If seek fails, let polling correct state once settle window passes.
+  } finally {
+    endCastCommand();
+    state.castControl.seekInFlight = false;
+    const latest = state.castControl.lastSeekTarget;
+    if (state.casting.lastUserCommand === 'seek' && (state.castControl.seekQueued || latest !== val)) {
+      state.castControl.seekQueued = false;
+      scheduleSeekDispatch(0);
+    }
+  }
+}
+
+function requestSeekTo(seconds, { settleMs = 1200 } = {}) {
+  if (!state.casting.duration || state.casting.duration <= 0) return;
+  const clamped = Math.max(0, Math.min(state.casting.duration, seconds));
+  const target = Math.floor(clamped);
+  markCastCommand('seek');
+
+  // Optimistic UI update immediately
+  state.casting.currentTime = clamped;
+  state.castControl.lastKnownTime = clamped;
+  state.castControl.lastKnownDuration = state.casting.duration;
   updateMiniPlayer();
+
+  // Debounce seeks (scrubber/keyboard can fire quickly)
+  state.castControl.lastSeekTarget = target;
+  state.castControl.seekSettleMs = settleMs;
+  scheduleSeekDispatch(180);
 }
 
 async function setVolume(val) {
   val = Math.max(0, Math.min(100, parseInt(val)));
-  await api('/api/cast/controls', { method: 'POST', body: { action: 'volume', value: val } });
-  state.casting.volume = val;
-  localStorage.setItem('cm_volume', String(val));
+  beginCastCommand('volume', 600);
+  try {
+    await api('/api/cast/controls', { method: 'POST', body: { action: 'volume', value: val } });
+    state.casting.volume = val;
+    localStorage.setItem('cm_volume', String(val));
+  } finally {
+    endCastCommand();
+  }
 }
 
 async function toggleMute() {
@@ -1238,6 +2449,9 @@ function updateMiniPlayer() {
 // ─── Scrubber Interactions ──────────────────────────────────
 function scrubberClick(e) {
   if (state.casting.duration <= 0) return;
+  // Avoid double-seeks: a drag release can still fire a click.
+  if (state.isDraggingScrubber) return;
+  if (nowMs() < (state.castControl.ignoreNextScrubberClickUntil || 0)) return;
   const scrubber = document.getElementById('mini-scrubber');
   const rect = scrubber.getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -1269,6 +2483,8 @@ function scrubberMouseDown(e) {
     document.removeEventListener('mouseup', onUp);
     const rect = scrubber.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    // Suppress the subsequent click event that would otherwise trigger a second seek.
+    state.castControl.ignoreNextScrubberClickUntil = nowMs() + 400;
     seekTo(pct * state.casting.duration);
   };
 
@@ -1431,7 +2647,15 @@ async function playQueueItem(index) {
   const seekTo = pos && pos.position > 180 && pos.percentage < 95 ? formatTimeHMS(pos.position) : undefined;
 
   try {
-    await api('/api/cast', { method: 'POST', body: { filePath: item.filePath, seekTo } });
+    await api('/api/cast', {
+      method: 'POST',
+      body: {
+        filePath: item.filePath,
+        seekTo,
+        autoTranscode: state.settings?.autoTranscode || 'auto',
+        ...(state.settings?.allowPretranscode === true ? { allowPretranscode: true } : {}),
+      },
+    });
     state.casting.filePath = item.filePath;
     state.casting.title = item.fileName;
     state.casting.state = 'playing';
@@ -1688,19 +2912,98 @@ function addToPlaylist(plId, filePath, fileName, type) {
 async function scanDevices() {
   toast('Scanning for devices...', 'info');
   try {
-    const data = await api('/api/devices');
-    const select = document.getElementById('setting-device');
-    select.innerHTML = (data.devices || []).map(d =>
-      `<option value="${esc(d.name)}">${esc(d.name)} (${d.ip})</option>`
-    ).join('');
-    toast(`Found ${data.devices.length} device(s)`, 'success');
+    const provider = document.getElementById('setting-provider')?.value || 'all';
+    const data = await api('/api/cast/devices/scan', { method: 'POST', body: { provider } });
+    state.castDevices = data.devices || [];
+    renderCastDevices();
+    const errorText = (data.errors || []).map(e => `${e.provider}: ${e.error}`).join(' · ');
+    toast(`Found ${state.castDevices.length} device(s)${errorText ? ` (${errorText})` : ''}`, data.errors?.length ? 'warning' : 'success', 7000);
   } catch (e) { /* toasted */ }
 }
 
-async function selectDevice(name) {
-  await api('/api/devices/select', { method: 'POST', body: { name } });
-  document.getElementById('device-name').textContent = name;
-  toast(`Device: ${name}`, 'info');
+async function loadCastDevices() {
+  try {
+    const data = await api('/api/cast/devices?provider=all', { silent: true });
+    state.castDevices = data.devices || [];
+    state.selectedCastDevice = state.castDevices.find(d => d.selected) || state.castDevices[0] || null;
+    renderCastDevices();
+  } catch (e) { /* ignore */ }
+}
+
+function renderCastDevices() {
+  const select = document.getElementById('setting-device');
+  if (!select) return;
+  const devices = state.castDevices || [];
+  if (!devices.length) {
+    select.innerHTML = '<option value="">No devices scanned</option>';
+  } else {
+    select.innerHTML = devices.map((d) => {
+      const value = `${d.provider}|${d.device_id || d.id}`;
+      const host = d.host ? ` · ${d.host}` : '';
+      const paired = d.provider === 'airplay' ? (d.paired ? ' · paired' : ' · needs pairing') : '';
+      return `<option value="${esc(value)}" ${d.selected ? 'selected' : ''}>${esc(d.name || d.device_id || d.id)} (${esc(d.provider)}${host}${paired})</option>`;
+    }).join('');
+  }
+  state.selectedCastDevice = devices.find(d => d.selected) || state.selectedCastDevice || devices[0] || null;
+  const label = document.getElementById('device-name');
+  if (label && state.selectedCastDevice) label.textContent = `${state.selectedCastDevice.name || 'Device'} · ${state.selectedCastDevice.provider}`;
+  const modalTarget = document.getElementById('cast-target-label');
+  if (modalTarget && state.selectedCastDevice) modalTarget.textContent = `${state.selectedCastDevice.name || 'Device'} (${state.selectedCastDevice.provider})`;
+}
+
+async function selectDevice(value) {
+  const [provider, deviceId] = String(value || '').split('|');
+  if (!provider || !deviceId) return;
+  const result = await api('/api/cast/devices/select', { method: 'POST', body: { provider, deviceId } });
+  state.castDevices.forEach(d => { d.selected = (d.device_id || d.id) === result.deviceId; });
+  state.selectedCastDevice = state.castDevices.find(d => d.selected) || { provider, device_id: result.deviceId, name: result.name || deviceId };
+  renderCastDevices();
+  toast(`Device: ${state.selectedCastDevice.name || result.deviceId}`, 'info');
+}
+
+async function startAirPlayPairing() {
+  const selected = state.selectedCastDevice;
+  if (!selected || selected.provider !== 'airplay') return toast('Select an AirPlay device first.', 'warning');
+  try {
+    const deviceId = selected.device_id || selected.id;
+    const start = await api('/api/cast/airplay/pair/start', { method: 'POST', body: { deviceId, host: selected.host } });
+    const pin = prompt(start.message || 'Enter the AirPlay pairing PIN:');
+    if (!pin) return;
+    await api('/api/cast/airplay/pair/finish', { method: 'POST', body: { deviceId: start.deviceId || deviceId, pin } });
+    toast('AirPlay device paired', 'success');
+    await scanDevices();
+  } catch (e) { /* toasted */ }
+}
+
+async function loadReceiverStatus() {
+  try {
+    state.receiverStatus = await api('/api/receiver/status', { silent: true });
+    renderReceiverStatus();
+  } catch (e) { /* ignore */ }
+}
+
+function renderReceiverStatus() {
+  const el = document.getElementById('receiver-status');
+  if (!el) return;
+  const s = state.receiverStatus;
+  if (!s) {
+    el.textContent = 'Receiver status unavailable';
+    return;
+  }
+  const warnings = Array.isArray(s.warnings) ? s.warnings : [];
+  el.innerHTML = `
+    <div>${esc(s.backend)} · ${esc(s.status)}${s.avahi ? ` · Avahi ${esc(s.avahi)}` : ''}${s.localIp ? ` · ${esc(s.localIp)}` : ''}</div>
+    <div class="setting-hint">${s.displayConnected ? 'Display detected' : 'No HDMI/DP display detected'} · ${s.audioSinkAvailable ? 'Audio sink detected' : 'No TV/audio sink detected'}</div>
+    ${warnings.map((w) => `<div class="setting-warning">${esc(w)}</div>`).join('')}
+  `;
+}
+
+async function controlReceiver(action) {
+  try {
+    state.receiverStatus = await api(`/api/receiver/${action}`, { method: 'POST' });
+    renderReceiverStatus();
+    toast(`Receiver ${action} requested`, 'info');
+  } catch (e) { /* toasted */ }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1765,10 +3068,29 @@ function importData(input) {
 
 function setupKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && state.currentSection === 'library') {
+      e.preventDefault();
+      savePreviewFile();
+      return;
+    }
+
     // Don't trigger when typing in inputs
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
     switch (e.key) {
+      case 'Delete':
+      case 'Backspace':
+        if (state.currentSection === 'library' && state.selectedFile) {
+          e.preventDefault();
+          deleteFile(state.selectedFile.path, state.selectedFile.name);
+        }
+        break;
+      case 'Enter':
+        if (state.currentSection === 'library' && state.selectedFile) {
+          e.preventDefault();
+          openSelectedFile(state.selectedFile.path);
+        }
+        break;
       case ' ':
         e.preventDefault();
         togglePlayPause();
@@ -1872,10 +3194,22 @@ async function loadRecent() {
   } catch (e) { /* toasted */ }
 }
 
-function navigateToFile(filePath) {
-  const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-  showSection('library');
-  loadFiles(dir);
+async function navigateToFile(filePath, type = 'file') {
+  const itemType = String(type || '').toLowerCase();
+  showSection('library', { skipLoad: true });
+  clearFileSearch();
+  if (pathHasHiddenSegment(filePath) && !state.showHidden) {
+    state.showHidden = true;
+    localStorage.setItem('cm_show_hidden', 'true');
+  }
+  if (itemType === 'folder' || itemType === 'directory') {
+    await loadFiles(filePath, { force: true });
+    return;
+  }
+  const dir = dirnamePath(filePath);
+  await loadFiles(dir);
+  selectFile(filePath);
+  scrollFileIntoView(filePath);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1886,38 +3220,95 @@ async function loadStarred() {
   try {
     const data = await api('/api/files/starred');
     const container = document.getElementById('starred-list');
+    state.starredPaths = new Set((data.files || []).map(f => f.file_path));
     if (!data.files || data.files.length === 0) {
-      container.innerHTML = '<div class="empty-state"><p>No starred files.</p><p class="empty-hint">Click the ⭐ icon on any file to add it here.</p></div>';
+      container.innerHTML = '<div class="empty-state"><p>No starred files or folders.</p><p class="empty-hint">Click the star icon on any item to add it here.</p></div>';
       return;
     }
     container.innerHTML = data.files.map(f => {
-      const name = basename(f.file_path);
+      const itemType = f.item_type || f.file_type || 'file';
+      const name = f.name || basename(f.file_path);
+      const pathArg = jsArg(f.file_path);
       const time = f.starred_at ? new Date(f.starred_at).toLocaleString() : '';
-      return `<div class="file-item" onclick="navigateToFile('${esc(f.file_path)}')">
-        <div class="file-icon">⭐</div>
+      const click = itemType === 'folder' ? `openStarredFolder('${pathArg}')` : `navigateToFile('${pathArg}')`;
+      const icon = itemType === 'folder' ? '&#128193;' : '&#128196;';
+      return `<div class="file-item" onclick="${click}">
+        <div class="file-icon">${icon}</div>
         <div class="file-info">
           <div class="file-name">${esc(name)}</div>
-          <div class="file-meta"><span>Starred ${time}</span></div>
+          <div class="file-meta"><span>${itemType === 'folder' ? 'Folder' : 'File'}</span><span>Starred ${time}</span></div>
         </div>
         <div class="file-actions">
-          <button onclick="event.stopPropagation(); toggleStar('${esc(f.file_path).replace(/'/g, "\\\\'")}')">Unstar</button>
+          <button onclick="event.stopPropagation(); setStar('${pathArg}', false, '${itemType}')">Unstar</button>
         </div>
       </div>`;
     }).join('');
   } catch (e) { /* toasted */ }
 }
 
-async function toggleStar(filePath) {
+async function loadStarredFolders() {
   try {
-    // Try to unstar first; if that fails, star it
-    try {
-      await api('/api/files/star', { method: 'DELETE', body: { path: filePath } });
-      toast('Removed from starred', 'info');
-    } catch (e) {
-      await api('/api/files/star', { method: 'POST', body: { path: filePath } });
-      toast('Added to starred ⭐', 'success');
-    }
-    if (state.currentSection === 'starred') loadStarred();
+    const data = await api('/api/files/starred-folders', { silent: true });
+    state.starredFolders = data.files || [];
+    renderStarredFolders();
+  } catch (e) { /* toasted */ }
+}
+
+function renderStarredFolders() {
+  const panel = document.getElementById('starred-folder-panel');
+  const list = document.getElementById('starred-folder-list');
+  if (!panel || !list) return;
+  if (!state.starredFolders.length) {
+    panel.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  panel.style.display = 'block';
+  list.innerHTML = state.starredFolders.map((f) => {
+    const pathArg = jsArg(f.file_path);
+    const label = esc(f.name || basename(f.file_path));
+    return `<button class="starred-folder-item" onclick="openStarredFolder('${pathArg}')" title="${esc(f.file_path)}">
+      <span class="starred-folder-icon">&#9733;</span>
+      <span class="starred-folder-name">${label}</span>
+    </button>`;
+  }).join('');
+}
+
+async function openStarredFolder(filePath) {
+  state.skipNextLibraryAutoLoad = true;
+  showSection('library', { skipLoad: true });
+  clearFileSearch();
+  await loadFiles(filePath, { force: true });
+}
+
+async function setStar(filePath, shouldStar, itemType = 'file') {
+  const type = itemType === 'folder' ? 'folder' : 'file';
+  if (shouldStar) {
+    await api('/api/files/star', { method: 'POST', body: { path: filePath, type } });
+    state.starredPaths.add(filePath);
+    toast(type === 'folder' ? 'Folder added to starred' : 'Added to starred', 'success');
+  } else {
+    await api('/api/files/star', { method: 'DELETE', body: { path: filePath } });
+    state.starredPaths.delete(filePath);
+    toast(type === 'folder' ? 'Folder removed from starred' : 'Removed from starred', 'info');
+  }
+
+  for (const f of state.files) {
+    if (f.path === filePath) f.starred = shouldStar;
+  }
+  for (const f of state.recursiveSearchResults) {
+    if (f.path === filePath) f.starred = shouldStar;
+  }
+  if (type === 'folder') await loadStarredFolders();
+  if (state.currentSection === 'starred') loadStarred();
+  if (state.currentSection === 'library') renderFiles();
+}
+
+async function toggleStar(filePath, itemType = 'file') {
+  try {
+    const f = findFile(filePath);
+    const currentlyStarred = !!f?.starred || state.starredPaths.has(filePath);
+    await setStar(filePath, !currentlyStarred, itemType || f?.type || 'file');
   } catch (e) { /* toasted */ }
 }
 
