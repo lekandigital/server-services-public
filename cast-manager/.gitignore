@@ -1,4 +1,11 @@
-node_modules/
-.env
-server.log
-*.log
+# diagnostics/
+diagnostics/
+data/cast-device-profiles.json
+
+# Generated test media
+/tmp/cast-manager-test-media/
+cast-test-media/
+
+# Temp bundles and logs
+*.cast-debug.zip
+cast-debug-*.zip

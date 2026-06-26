@@ -1,71 +1,116 @@
-# OCR Engine (:8006)
+# 🔍 OCR Engine — Multi-Backend Video OCR
 
-Web UI for image & PDF text extraction using PaddleOCR. Supports 109 languages with GPU acceleration.
+GPU-accelerated OCR service with **8 selectable backends**, video support, quality modes, and ensemble engine modes.
 
-## Screenshots
+## Features
 
-### Upload & Extract
-Drag-and-drop file upload with GPU status indicator and one-click text extraction.
+- **Image OCR** — PNG, JPG, WebP, BMP, TIFF, GIF
+- **PDF OCR** — Multi-page with layout preservation
+- **Video OCR** — MP4, MOV, MKV, WebM, AVI, and more
+- **Multi-Backend** — PaddleOCR, EasyOCR, Surya, docTR, RapidOCR, Tesseract, TrOCR
+- **Engine Modes** — Single, Cascade, Consensus, Maximum Recall
+- **Quality Modes** — Standard, High, Max (3090 Ti optimized)
+- **Video Strategies** — Scrolling Page, Slides, Document Camera, Full Archive
+- **109+ Languages** supported
 
-![OCR Upload](screenshots/ocr-upload.png)
-
-### Extraction History
-Sortable history table showing file type, word count, language, confidence scores, and result actions.
-
-![OCR History](screenshots/ocr-history.png)
-
-## How It Works
-
-- Flask server with embedded HTML UI in `static/index.html`
-- Uses PaddleOCR for text detection and recognition
-- Converts PDFs to images via `pdf2image` (requires poppler)
-- Stores job state in SQLite (`jobs.db`, auto-created)
-- Results stored in `results/` directory (auto-created)
-
-## Dependencies
+## Architecture
 
 ```
-Python 3.10+
-NVIDIA GPU with CUDA support (optional, CPU works too)
-poppler-utils (for PDF page rendering)
-
-pip packages:
-  flask==3.1.2
-  flask-cors==6.0.2
-  paddleocr==2.9.1
-  paddlepaddle-gpu==2.6.2   # or paddlepaddle for CPU-only
-  pillow==12.1.0
-  pdf2image==1.17.0
-  Werkzeug==3.1.5
+ocr-engine/
+├── server.py                 # Flask app, routes, job processing
+├── ocr_backends/
+│   ├── __init__.py           # Registry, config dicts, factory
+│   ├── base.py               # OCRBox dataclass, OCRBackend ABC
+│   ├── paddle_backend.py     # PaddleOCR 2.x (default, required)
+│   ├── paddle3_backend.py    # PaddleOCR 3.x / PP-OCRv5 (optional)
+│   ├── easyocr_backend.py    # EasyOCR (optional)
+│   ├── surya_backend.py      # Surya 2 (optional, heavy)
+│   ├── doctr_backend.py      # docTR (optional)
+│   ├── rapidocr_backend.py   # RapidOCR (optional)
+│   ├── tesseract_backend.py  # Tesseract CLI (optional)
+│   └── trocr_backend.py      # TrOCR line recognizer (optional)
+├── video_ocr/
+│   ├── __init__.py
+│   ├── frames.py             # ffmpeg/ffprobe frame extraction
+│   ├── preprocessing.py      # CLAHE, sharpen, threshold variants
+│   ├── dedupe.py             # dHash frame + fuzzy line deduplication
+│   ├── consensus.py          # Multi-backend merge strategies
+│   ├── exports.py            # 10 export formats
+│   └── pipeline.py           # Main orchestrator
+├── requirements.txt          # Base dependencies
+├── requirements-extra-ocr.txt # Optional backends
+├── static/index.html         # Web UI
+└── paddleocr.service         # systemd unit
 ```
 
-### System packages (Ubuntu 22.04)
+## OCR Backends
+
+| Backend | Key | GPU | Required | Best For |
+|---------|-----|-----|----------|----------|
+| PaddleOCR 2.x | `paddle` | ✅ | ✅ | Screen recordings, documents, multilingual |
+| PaddleOCR 3.x | `paddle3` | ✅ | ❌ | High accuracy, layout, tables |
+| EasyOCR | `easyocr` | ✅ | ❌ | Scene text, fallback, multilingual |
+| Surya 2 | `surya` | ✅ | ❌ | Max quality, layout, tables |
+| docTR | `doctr` | ✅ | ❌ | Documents, clean screenshots |
+| RapidOCR | `rapidocr` | ✅ | ❌ | Fast batch OCR, ONNX |
+| Tesseract | `tesseract` | ❌ | ❌ | Fallback, debugging |
+| TrOCR | `trocr` | ✅ | ❌ | Cropped lines, handwriting |
+
+## Quality Modes
+
+- **Standard** — FPS=2, 1920px, single backend, fast
+- **High** (recommended for 3090 Ti) — FPS=4, 2560px, cascade with fallbacks
+- **Max** — FPS=6, 3840px, maximum recall, all backends, all scales
+
+## Installation
+
+### Base install (PaddleOCR only)
 
 ```bash
-sudo apt install -y poppler-utils
 pip3 install -r requirements.txt
 ```
 
-## Files
-
-| File | Purpose |
-|------|---------|
-| `server.py` | Flask app — API + OCR processing |
-| `static/index.html` | Frontend UI |
-| `jobs.db` | SQLite job database (auto-created at runtime) |
-| `uploads/` | Uploaded files (auto-created at runtime) |
-| `results/` | OCR output files (auto-created at runtime) |
-
-## Run Locally
+### Optional backends
 
 ```bash
-pip3 install -r requirements.txt
+pip3 install -r requirements-extra-ocr.txt
+
+# Tesseract (system package):
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+```
+
+### System dependencies
+
+```bash
+# Already in deploy.sh:
+sudo apt-get install -y ffmpeg poppler-utils
+```
+
+## Running
+
+```bash
 python3 server.py
-# Serves on http://0.0.0.0:8006
+# → http://localhost:8006
 ```
 
-## Original Deployment Location
+## API Endpoints
 
-```
-/opt/paddleocr-ui/
-```
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web UI |
+| `/health` | GET | Status + backend availability |
+| `/backends` | GET | Full backend registry + config |
+| `/ocr` | POST | Upload file for OCR |
+| `/status/<id>` | GET | Job progress |
+| `/result/<id>` | GET | Job result |
+| `/download/<id>/<fmt>` | GET | Download export |
+| `/history` | GET | Job history |
+| `/delete/<id>` | DELETE | Delete job |
+
+### Export Formats
+
+`txt`, `deduped_txt`, `by_frame_txt`, `timestamps_txt`, `json`, `csv`, `srt`, `vtt`, `md`, `debug_json`
+
+## Port
+
+**8006** — do not change without updating `paddleocr.service` and `deploy.sh`.

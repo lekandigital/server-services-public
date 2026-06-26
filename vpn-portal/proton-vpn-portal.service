@@ -1,6 +1,6 @@
 [Unit]
 Description=Proton VPN Portal
-After=network-online.target me.proton.vpn.split_tunneling.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -11,9 +11,13 @@ WorkingDirectory=__INSTALL_DIR__/vpn-portal
 ExecStart=/usr/bin/python3 __INSTALL_DIR__/vpn-portal/server.py --port 8011
 Restart=always
 RestartSec=5
+TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=proton-vpn-portal
+# State + lock paths must match proton-vpn-watchdog.service
+Environment=VPN_WATCHDOG_STATE=/tmp/vpn-watchdog.json
+Environment=VPN_PORTAL_LOCK=/tmp/vpn-portal.lock
 
 [Install]
 WantedBy=multi-user.target

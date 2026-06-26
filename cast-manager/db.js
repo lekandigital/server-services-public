@@ -605,19 +605,20 @@ function indexFile(filePath, name, extension, size, isDirectory, parentPath, mod
 
 function searchFiles(query, limit = 50) {
   const d = getDB();
+  const cleaned = String(query || '').replace(/[^\w.\- ]+/g, ' ').trim();
+  if (!cleaned) return [];
   try {
-    // Try FTS5 search first
+    const terms = cleaned.split(/\s+/).map((w) => `"${w.replace(/"/g, '')}"*`).join(' ');
     return d.prepare(`
       SELECT fi.* FROM file_index fi
       JOIN file_search fs ON fi.id = fs.rowid
       WHERE file_search MATCH ?
       ORDER BY rank LIMIT ?
-    `).all(query + '*', limit);
+    `).all(terms, limit);
   } catch (e) {
-    // Fallback to LIKE search
     return d.prepare(`
       SELECT * FROM file_index WHERE name LIKE ? ORDER BY name LIMIT ?
-    `).all(`%${query}%`, limit);
+    `).all(`%${cleaned}%`, limit);
   }
 }
 

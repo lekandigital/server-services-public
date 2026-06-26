@@ -558,13 +558,23 @@
         <div class="modal-section">
           <label>Mode:</label>
           <select id="cast-mode-select" class="input input-sm" onchange="if(state.castModalFile)updateCastPipelinePreview(state.castModalFile.path)">
-            <option value="auto">Automatic recommended</option>
-            <option value="hls">Compatibility / HLS</option>
-            <option value="vlc">VLC-like fallback</option>
-            <option value="full-transcode">Force full transcode</option>
-            <option value="direct">Direct only</option>
+            <option value="auto">Auto (recommended)</option>
+            <option value="simple-direct">Simple Direct (debug)</option>
+            <option value="direct">Direct / native URL</option>
+            <option value="ffmpeg-live">FFmpeg Live (fMP4)</option>
+            <option value="hls">HLS compatibility</option>
+            <option value="vlc">VLC relay</option>
+            <option value="pretranscode">Pretranscode cache</option>
           </select>
           <div class="pipeline-preview" id="cast-pipeline-label">Automatic compatibility mode</div>
+        </div>
+        <div class="modal-section" id="cast-debug-section" style="display:none">
+          <label>Last cast diagnostics</label>
+          <pre id="cast-debug-panel" class="cast-debug-panel" style="font-size:11px;max-height:120px;overflow:auto;background:var(--color-bg-muted);padding:8px;border-radius:6px"></pre>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button class="btn-secondary btn-sm" type="button" onclick="runCastDoctor()">Run Cast Doctor</button>
+            <button class="btn-secondary btn-sm" type="button" onclick="copyCastDiagnostics()">Copy diagnostics</button>
+          </div>
         </div>
         <div class="modal-section">
           <label>Start playback from:</label>
@@ -583,7 +593,9 @@
         <div class="modal-section" id="subtitle-section" style="display:none">
           <label>Subtitles:</label>
           <select id="subtitle-select" class="input input-sm">
-            <option value="">None</option>
+            <option value="">Off</option>
+            <option value="__auto__">Auto-detect best</option>
+            <option value="__burnin__">Burn in selected subtitle</option>
           </select>
           <div style="display:flex;gap:8px;margin-top:8px;align-items:center">
             <input type="text" id="custom-subtitle-path" class="input input-sm" style="flex:1"

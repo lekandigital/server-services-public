@@ -1,0 +1,9 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useActivityStore } from '../../stores/activityStore'
+import SectionBreadcrumbs from '../common/SectionBreadcrumbs.vue'
+const activity = useActivityStore(); const filter = ref('')
+const rows = computed(() => filter.value ? activity.activity.filter((a) => String(a.action || '').toLowerCase().includes(filter.value.toLowerCase())) : activity.activity)
+onMounted(() => activity.loadActivity())
+</script>
+<template><section class="page-stack"><div class="page-actions"><div><span class="eyebrow">Server timeline</span><h1 class="page-title">Activity</h1><SectionBreadcrumbs /><p class="page-description">A readable view of file, share, search, and cast-adjacent operations.</p></div><button class="btn btn-secondary" @click="activity.loadActivity()">Refresh</button></div><input v-model="filter" class="input" style="max-width:340px" aria-label="Filter activity" placeholder="Filter by action" /><div v-if="activity.error" class="inline-message error-message"><div><strong>Activity could not load</strong><p>{{ activity.error }} · Expected GET /api/activity</p></div><button class="btn btn-secondary" @click="activity.loadActivity()">Retry</button></div><div v-else-if="!rows.length" class="friendly-empty"><strong>No matching activity</strong><p>Try another filter or return after using the Library.</p></div><article v-for="(row, i) in rows" :key="row.id || i" class="card" style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center"><span class="status-badge neutral">{{ row.action || 'event' }}</span><div><strong>{{ row.file_path?.split('/').pop() || 'Cast Manager' }}</strong><div class="path-text">{{ row.file_path || (typeof row.details === 'string' ? row.details : '') }}</div></div><time style="color:var(--text-muted);font-size:11px">{{ row.created_at ? new Date(row.created_at).toLocaleString() : '—' }}</time></article></section></template>
