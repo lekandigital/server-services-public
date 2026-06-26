@@ -22,10 +22,11 @@
     "color": "#58a6ff"
   },
   {
-    "name": "Video Manager",
-    "description": "Manage videos and cast to devices",
+    "name": "File Manager",
+    "description": "File manager, media casting, and server storage",
+    "id": "cast-manager",
     "port": 8004,
-    "icon": "🎬",
+    "icon": "📁",
     "color": "#f0883e"
   },
   {
@@ -85,5 +86,14 @@
     "kind": "vpn",
     "icon": "🔐",
     "color": "#38bdf8"
+  },
+  {
+    "name": "PDF Portal",
+    "description": "Markdown to polished PDF documents",
+    "id": "pdf-portal",
+    "port": 8012,
+    "url": "http://REDACTED_SERVER_IP:8012/",
+    "icon": "📄",
+    "color": "#f59e0b"
   }
 ]

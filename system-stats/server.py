@@ -29,6 +29,7 @@ SERVICE_TARGETS = [
     {"name": "X-Bot Portal", "port": 8009, "unit": "xbot-lan-dashboard.service"},
     {"name": "VLC Stream", "port": 8010},
     {"name": "Proton VPN Portal", "port": 8011, "unit": "proton-vpn-portal.service"},
+    {"name": "PDF Portal", "port": 8012, "unit": "pdf-portal.service", "url": "http://REDACTED_SERVER_IP:8012/"},
 ]
 
 # ── History tracking (SQLite-backed) ──

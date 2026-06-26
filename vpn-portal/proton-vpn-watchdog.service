@@ -1,0 +1,24 @@
+[Unit]
+Description=Proton VPN Always-On Watchdog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+ExecStart=/usr/bin/python3 __INSTALL_DIR__/vpn-portal/proton-vpn-watchdog.py
+Restart=always
+RestartSec=10
+# Writes state to /tmp/vpn-watchdog.json, read by the portal /api/watchdog.
+# VPN_PORTAL_LOCK must match the portal's so the watchdog backs off while the
+# portal is actively (re)connecting.
+Environment=VPN_WATCHDOG_INTERVAL=20
+Environment=VPN_WATCHDOG_STATE=/tmp/vpn-watchdog.json
+Environment=VPN_PORTAL_LOCK=/tmp/vpn-portal.lock
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=proton-vpn-watchdog
+
+[Install]
+WantedBy=multi-user.target

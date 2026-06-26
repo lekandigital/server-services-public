@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OCR Engine — PaddleOCR</title>
-<meta name="description" content="GPU-accelerated OCR engine supporting 109 languages. Extract text from images and PDFs instantly.">
+<title>OCR Engine — Multi-Backend Video OCR</title>
+<meta name="description" content="GPU-accelerated multi-backend OCR engine. Extract text from images, PDFs, and videos with selectable backends and quality modes.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -14,7 +14,7 @@
   --border:#2a2d3a;--border2:#353849;
   --text:#e4e4e7;--text2:#a1a1aa;--text3:#71717a;
   --accent:#7c3aed;--accent2:#6d28d9;--accent-glow:rgba(124,58,237,.25);
-  --green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;
+  --green:#22c55e;--red:#ef4444;--orange:#f59e0b;--blue:#3b82f6;--cyan:#06b6d4;
   --radius:12px;--radius-sm:8px;
   --font:'Inter',system-ui,-apple-system,sans-serif;
   --mono:'JetBrains Mono','Fira Code',monospace;
@@ -25,8 +25,7 @@ html{font-size:15px;scroll-behavior:smooth}
 body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;line-height:1.6}
 a{color:var(--accent);text-decoration:none}
 
-/* Layout */
-.container{max-width:960px;margin:0 auto;padding:24px 20px}
+.container{max-width:1000px;margin:0 auto;padding:24px 20px}
 
 /* Header */
 .header{text-align:center;padding:48px 0 32px;position:relative}
@@ -34,7 +33,8 @@ a{color:var(--accent);text-decoration:none}
 .header h1{font-size:2rem;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
 .header h1 span{display:inline-block;margin-right:8px}
 .header .subtitle{color:var(--text2);font-size:.875rem;font-weight:400;letter-spacing:.02em}
-.gpu-badge{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:5px 14px;background:var(--card);border:1px solid var(--border);border-radius:20px;font-size:.75rem;font-weight:500;color:var(--text2);transition:var(--transition)}
+.badge-row{display:flex;justify-content:center;gap:8px;margin-top:12px;flex-wrap:wrap}
+.gpu-badge{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;background:var(--card);border:1px solid var(--border);border-radius:20px;font-size:.75rem;font-weight:500;color:var(--text2);transition:var(--transition)}
 .gpu-badge .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
 .gpu-badge.online .dot{background:var(--green);box-shadow:0 0 8px rgba(34,197,94,.5)}
 .gpu-badge.offline .dot{background:var(--red);box-shadow:0 0 8px rgba(239,68,68,.5)}
@@ -49,12 +49,12 @@ a{color:var(--accent);text-decoration:none}
 .upload-text{color:var(--text2);font-size:.875rem}
 .upload-text strong{color:var(--text);font-weight:500}
 .upload-hint{color:var(--text3);font-size:.75rem;margin-top:6px}
-
-/* File Preview */
 .file-preview{display:none;align-items:center;gap:16px;padding:16px;background:var(--bg2);border-radius:var(--radius-sm);text-align:left}
 .file-preview.visible{display:flex}
 .file-thumb{width:64px;height:64px;border-radius:var(--radius-sm);object-fit:cover;background:var(--card2);border:1px solid var(--border)}
-.file-thumb.pdf-icon{display:flex;align-items:center;justify-content:center;font-size:1.5rem;color:var(--red)}
+.file-thumb-icon{width:64px;height:64px;border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;font-size:1.5rem;background:var(--card2);border:1px solid var(--border);flex-shrink:0}
+.file-thumb-icon.pdf{color:var(--red)}
+.file-thumb-icon.video{color:var(--cyan)}
 .file-info{flex:1;min-width:0}
 .file-name{font-weight:500;font-size:.875rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .file-meta{color:var(--text3);font-size:.75rem;margin-top:2px}
@@ -82,9 +82,15 @@ a{color:var(--accent);text-decoration:none}
 .opt-group{display:flex;flex-direction:column;gap:4px}
 .opt-group.full-width{grid-column:1/-1}
 .opt-label{font-size:.75rem;font-weight:500;color:var(--text2);text-transform:uppercase;letter-spacing:.05em}
+.opt-hint{font-size:.7rem;color:var(--text3);margin-top:2px;line-height:1.4}
 .opt-select,.opt-input{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;color:var(--text);font-family:var(--font);font-size:.85rem;transition:var(--transition)}
 .opt-select:focus,.opt-input:focus{outline:none;border-color:var(--accent)}
 .opt-select{cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2371717a' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.opt-select:disabled{opacity:.5;cursor:not-allowed}
+
+/* Sections */
+.section-divider{border:none;border-top:1px solid var(--border);margin:12px 0}
+.section-label{font-size:.7rem;font-weight:600;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;grid-column:1/-1}
 
 /* Toggle Switch */
 .toggle-wrap{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
@@ -101,6 +107,16 @@ a{color:var(--accent);text-decoration:none}
 .range-wrap input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;background:var(--accent);border-radius:50%;cursor:pointer}
 .range-val{font-size:.8rem;font-family:var(--mono);color:var(--text2);min-width:28px;text-align:right}
 
+/* Warning */
+.warning-box{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:var(--radius-sm);padding:10px 14px;font-size:.78rem;color:var(--orange);margin-top:8px;display:none;grid-column:1/-1;line-height:1.5}
+.warning-box.visible{display:block}
+
+/* Backend status */
+.backend-status{display:inline-flex;align-items:center;gap:4px;font-size:.7rem;color:var(--text3)}
+.backend-status .dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+.backend-status.available .dot{background:var(--green)}
+.backend-status.unavailable .dot{background:var(--red)}
+
 /* Progress Section */
 .progress-section{display:none;margin-top:32px;padding:24px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius)}
 .progress-section.visible{display:block}
@@ -114,9 +130,14 @@ a{color:var(--accent);text-decoration:none}
 .results-section{display:none;margin-top:32px}
 .results-section.visible{display:block}
 .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.stats-row.extended{grid-template-columns:repeat(4,1fr)}
 .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:16px;text-align:center}
 .stat-value{font-size:1.3rem;font-weight:700;color:var(--text);font-family:var(--mono)}
 .stat-label{font-size:.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-top:4px}
+
+/* Video stats row */
+.video-stats-row{display:none;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.video-stats-row.visible{display:grid}
 
 /* Tabs */
 .tabs{display:flex;gap:0;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;margin-bottom:16px}
@@ -142,6 +163,13 @@ a{color:var(--accent);text-decoration:none}
 /* Action Buttons */
 .result-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center}
 .result-actions .spacer{flex:1}
+.download-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;margin-top:12px}
+.download-grid .btn{font-size:.75rem;padding:6px 10px}
+
+/* Backend info bar */
+.backend-info-bar{display:none;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:16px;font-size:.8rem;color:var(--text2)}
+.backend-info-bar.visible{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+.backend-info-bar .tag{background:var(--card);padding:3px 10px;border-radius:4px;font-size:.72rem;font-weight:500;color:var(--accent);border:1px solid var(--border)}
 
 /* History */
 .history-section{margin-top:48px;padding-top:32px;border-top:1px solid var(--border)}
@@ -158,6 +186,7 @@ tr:hover td{background:rgba(124,58,237,.03)}
 .type-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.7rem;font-weight:500;text-transform:uppercase}
 .type-badge.image{background:rgba(59,130,246,.15);color:var(--blue)}
 .type-badge.pdf{background:rgba(239,68,68,.15);color:var(--red)}
+.type-badge.video{background:rgba(6,182,212,.15);color:var(--cyan)}
 .confidence-bar{display:inline-block;width:48px;height:4px;background:var(--border);border-radius:2px;overflow:hidden;vertical-align:middle;margin-right:6px}
 .confidence-bar span{display:block;height:100%;border-radius:2px}
 .actions-cell{display:flex;gap:4px}
@@ -170,7 +199,6 @@ tr:hover td{background:rgba(124,58,237,.03)}
 .pagination button:disabled{opacity:.3;cursor:not-allowed}
 .pagination span{font-size:.8rem;color:var(--text3);font-family:var(--mono)}
 
-/* Empty state */
 .empty-state{text-align:center;padding:40px;color:var(--text3);font-size:.85rem}
 
 /* Toast */
@@ -179,22 +207,21 @@ tr:hover td{background:rgba(124,58,237,.03)}
 .toast.success{border-color:var(--green)}
 .toast.error{border-color:var(--red)}
 
-/* Scroll */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:var(--border2)}
 
-/* Responsive */
 @media(max-width:640px){
   .container{padding:16px 12px}
   .header{padding:32px 0 24px}
   .header h1{font-size:1.5rem}
-  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .stats-row,.video-stats-row.visible{grid-template-columns:repeat(2,1fr)}
   .options-panel.visible{grid-template-columns:1fr}
   .upload-zone{padding:32px 16px}
   table{font-size:.75rem}
   th,td{padding:8px 10px}
+  .download-grid{grid-template-columns:repeat(3,1fr)}
 }
 </style>
 </head>
@@ -204,10 +231,16 @@ tr:hover td{background:rgba(124,58,237,.03)}
   <!-- Header -->
   <header class="header">
     <h1><span>🔍</span> OCR Engine</h1>
-    <p class="subtitle">PaddleOCR · GPU Accelerated · 109 Languages</p>
-    <div class="gpu-badge" id="gpuBadge">
-      <span class="dot"></span>
-      <span id="gpuText">Checking...</span>
+    <p class="subtitle">Multi-Backend · GPU Accelerated · Images · PDFs · Videos</p>
+    <div class="badge-row">
+      <div class="gpu-badge" id="gpuBadge">
+        <span class="dot"></span>
+        <span id="gpuText">Checking...</span>
+      </div>
+      <div class="gpu-badge" id="backendBadge" style="display:none">
+        <span class="dot"></span>
+        <span id="backendCount">0 backends</span>
+      </div>
     </div>
   </header>
 
@@ -216,17 +249,18 @@ tr:hover td{background:rgba(124,58,237,.03)}
     <div id="uploadPrompt">
       <div class="upload-icon">📄</div>
       <p class="upload-text"><strong>Drop file here</strong> or click to browse</p>
-      <p class="upload-hint">PNG, JPG, WebP, BMP, TIFF, GIF, or PDF · Max 100 MB</p>
+      <p class="upload-hint">Images · PDFs · Videos (MP4, MOV, MKV, WebM, AVI…) · Max 2 GB</p>
     </div>
     <div class="file-preview" id="filePreview">
-      <img class="file-thumb" id="fileThumb" alt="">
+      <img class="file-thumb" id="fileThumb" alt="" style="display:none">
+      <div class="file-thumb-icon" id="fileIcon" style="display:none"></div>
       <div class="file-info">
         <div class="file-name" id="fileName"></div>
         <div class="file-meta" id="fileMeta"></div>
       </div>
       <button class="file-remove" id="fileRemove" title="Remove">✕</button>
     </div>
-    <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif,.pdf" style="display:none">
+    <input type="file" id="fileInput" accept=".png,.jpg,.jpeg,.webp,.bmp,.tiff,.gif,.pdf,.mov,.mp4,.m4v,.mkv,.webm,.avi,.mpeg,.mpg,.wmv,.flv,.ts,.m2ts" style="display:none">
   </div>
 
   <button class="btn btn-primary extract-btn" id="extractBtn" disabled>Extract Text</button>
@@ -238,6 +272,7 @@ tr:hover td{background:rgba(124,58,237,.03)}
     <span class="arrow" id="optArrow">▼</span>
   </button>
   <div class="options-panel" id="optionsPanel">
+    <!-- Core Options -->
     <div class="opt-group">
       <label class="opt-label">Language</label>
       <select class="opt-select" id="optLang">
@@ -245,21 +280,101 @@ tr:hover td{background:rgba(124,58,237,.03)}
       </select>
     </div>
     <div class="opt-group">
-      <label class="opt-label">Output Format</label>
-      <select class="opt-select" id="optFormat">
-        <option value="txt">Plain Text</option>
-        <option value="json">JSON with Boxes</option>
-        <option value="csv">CSV</option>
-        <option value="searchable_pdf">Searchable PDF</option>
+      <label class="opt-label">OCR Backend</label>
+      <select class="opt-select" id="optBackend">
+        <option value="paddle" selected>PaddleOCR 2.x — default</option>
       </select>
-    </div>
-    <div class="opt-group">
-      <label class="opt-label">Auto-Rotate</label>
-      <div class="toggle-wrap">
-        <span style="font-size:.82rem;color:var(--text2)">Correct skewed text</span>
-        <label class="toggle"><input type="checkbox" id="optAngle" checked><span class="slider"></span></label>
+      <div id="backendAvailStatus" class="backend-status available">
+        <span class="dot"></span> <span>Available</span>
       </div>
     </div>
+    <div class="opt-group">
+      <label class="opt-label">Engine Mode</label>
+      <select class="opt-select" id="optEngineMode">
+        <option value="single" selected>Single</option>
+        <option value="cascade">Cascade</option>
+        <option value="consensus">Consensus</option>
+        <option value="maximum-recall">Maximum Recall</option>
+      </select>
+      <div class="opt-hint" id="engineModeHint">Run one selected backend.</div>
+    </div>
+    <div class="opt-group">
+      <label class="opt-label">Quality Mode</label>
+      <select class="opt-select" id="optQuality">
+        <option value="standard">Standard</option>
+        <option value="high" selected>High — Recommended</option>
+        <option value="max">Max / 3090 Ti</option>
+      </select>
+    </div>
+
+    <div class="warning-box" id="maxWarning">
+      ⚠️ Max mode may process thousands of frames through multiple OCR engines and use most available VRAM. Recommended only for RTX 3090 Ti or similar GPUs.
+    </div>
+
+    <!-- Video-specific options -->
+    <div class="section-label" id="videoOptionsLabel" style="display:none">🎬 Video Options</div>
+
+    <div class="opt-group" id="strategyGroup" style="display:none">
+      <label class="opt-label">Video Strategy</label>
+      <select class="opt-select" id="optStrategy">
+        <option value="scrolling-page" selected>Scrolling Page / Chat / Webpage</option>
+        <option value="slides">Slides / Presentation</option>
+        <option value="document-camera">Document Camera / Physical Paper</option>
+        <option value="full-archive">Full Archive</option>
+      </select>
+    </div>
+
+    <div class="opt-group" id="fpsGroup" style="display:none">
+      <label class="opt-label">Sample FPS: <span id="fpsVal">4</span></label>
+      <div class="range-wrap">
+        <span class="range-val">0.5</span>
+        <input type="range" id="optFps" min="0.5" max="12" step="0.5" value="4">
+        <span class="range-val">12</span>
+      </div>
+    </div>
+
+    <div class="opt-group" id="maxWidthGroup" style="display:none">
+      <label class="opt-label">Max Width</label>
+      <select class="opt-select" id="optMaxWidth">
+        <option value="1280">1280</option>
+        <option value="1920">1920</option>
+        <option value="2560" selected>2560</option>
+        <option value="3840">3840</option>
+      </select>
+    </div>
+
+    <div class="opt-group" id="maxFramesGroup" style="display:none">
+      <label class="opt-label">Max Frames</label>
+      <input type="number" class="opt-input" id="optMaxFrames" placeholder="Unlimited" min="10" step="100">
+    </div>
+
+    <div class="opt-group" id="dedupeFramesGroup" style="display:none">
+      <label class="opt-label">Dedupe Frames</label>
+      <div class="toggle-wrap">
+        <span style="font-size:.82rem;color:var(--text2)">Skip duplicate frames</span>
+        <label class="toggle"><input type="checkbox" id="optDedupeFrames" checked><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="opt-group" id="dedupeLinesGroup" style="display:none">
+      <label class="opt-label">Dedupe Lines</label>
+      <div class="toggle-wrap">
+        <span style="font-size:.82rem;color:var(--text2)">Remove duplicate text lines</span>
+        <label class="toggle"><input type="checkbox" id="optDedupeLines" checked><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <div class="opt-group" id="debugGroup" style="display:none">
+      <label class="opt-label">Debug</label>
+      <div class="toggle-wrap">
+        <span style="font-size:.82rem;color:var(--text2)">Keep debug frames</span>
+        <label class="toggle"><input type="checkbox" id="optDebug"><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <!-- Image/PDF options -->
+    <div class="section-label" id="imagePdfLabel">🖼️ Image / PDF Options</div>
+
     <div class="opt-group">
       <label class="opt-label">Preserve Layout</label>
       <div class="toggle-wrap">
@@ -267,7 +382,8 @@ tr:hover td{background:rgba(124,58,237,.03)}
         <label class="toggle"><input type="checkbox" id="optLayout" checked><span class="slider"></span></label>
       </div>
     </div>
-    <div class="opt-group full-width">
+
+    <div class="opt-group full-width" id="threshGroup">
       <label class="opt-label">Detection Threshold: <span id="threshVal">0.3</span></label>
       <div class="range-wrap">
         <span class="range-val">0.1</span>
@@ -275,6 +391,7 @@ tr:hover td{background:rgba(124,58,237,.03)}
         <span class="range-val">0.9</span>
       </div>
     </div>
+
     <div class="opt-group" id="pageRangeGroup" style="display:none">
       <label class="opt-label">Page Range</label>
       <input type="text" class="opt-input" id="optPages" placeholder="e.g. 1-3,5 (default: all)">
@@ -292,11 +409,29 @@ tr:hover td{background:rgba(124,58,237,.03)}
 
   <!-- Results -->
   <div class="results-section" id="resultsSection">
+    <!-- Backend info bar -->
+    <div class="backend-info-bar" id="backendInfoBar">
+      <span>Backend:</span>
+      <span class="tag" id="resultBackend">paddle</span>
+      <span>Mode:</span>
+      <span class="tag" id="resultMode">single</span>
+      <span>Quality:</span>
+      <span class="tag" id="resultQuality">standard</span>
+    </div>
+
     <div class="stats-row" id="statsRow">
       <div class="stat-card"><div class="stat-value" id="statPages">-</div><div class="stat-label">Pages</div></div>
       <div class="stat-card"><div class="stat-value" id="statWords">-</div><div class="stat-label">Words</div></div>
       <div class="stat-card"><div class="stat-value" id="statConf">-</div><div class="stat-label">Avg Confidence</div></div>
       <div class="stat-card"><div class="stat-value" id="statTime">-</div><div class="stat-label">Time</div></div>
+    </div>
+
+    <!-- Video-specific stats -->
+    <div class="video-stats-row" id="videoStatsRow">
+      <div class="stat-card"><div class="stat-value" id="statRawFrames">-</div><div class="stat-label">Raw Frames</div></div>
+      <div class="stat-card"><div class="stat-value" id="statFrames">-</div><div class="stat-label">Processed</div></div>
+      <div class="stat-card"><div class="stat-value" id="statDuration">-</div><div class="stat-label">Duration</div></div>
+      <div class="stat-card"><div class="stat-value" id="statDeduped">-</div><div class="stat-label">Deduped Lines</div></div>
     </div>
 
     <div class="tabs">
@@ -318,13 +453,25 @@ tr:hover td{background:rgba(124,58,237,.03)}
       <button class="btn btn-secondary btn-sm" id="nextPage">Next →</button>
     </div>
 
-    <div class="result-actions">
-      <div class="btn-group">
-        <button class="btn btn-secondary btn-sm" onclick="copyText()">📋 Copy</button>
+    <!-- Downloads -->
+    <div style="margin-top:20px">
+      <div class="opt-label" style="margin-bottom:8px">📥 Download Results</div>
+      <div class="download-grid" id="downloadGrid">
         <button class="btn btn-secondary btn-sm" onclick="downloadResult('txt')">TXT</button>
         <button class="btn btn-secondary btn-sm" onclick="downloadResult('json')">JSON</button>
         <button class="btn btn-secondary btn-sm" onclick="downloadResult('csv')">CSV</button>
+        <button class="btn btn-secondary btn-sm" id="dlDeduped" style="display:none" onclick="downloadResult('deduped_txt')">Deduped</button>
+        <button class="btn btn-secondary btn-sm" id="dlByFrame" style="display:none" onclick="downloadResult('by_frame_txt')">By Frame</button>
+        <button class="btn btn-secondary btn-sm" id="dlTimestamps" style="display:none" onclick="downloadResult('timestamps_txt')">Timestamps</button>
+        <button class="btn btn-secondary btn-sm" id="dlSrt" style="display:none" onclick="downloadResult('srt')">SRT</button>
+        <button class="btn btn-secondary btn-sm" id="dlVtt" style="display:none" onclick="downloadResult('vtt')">VTT</button>
+        <button class="btn btn-secondary btn-sm" id="dlMd" style="display:none" onclick="downloadResult('md')">Markdown</button>
+        <button class="btn btn-secondary btn-sm" id="dlDebug" style="display:none" onclick="downloadResult('debug_json')">Debug</button>
       </div>
+    </div>
+
+    <div class="result-actions" style="margin-top:16px">
+      <button class="btn btn-secondary btn-sm" onclick="copyText()">📋 Copy Text</button>
       <span class="spacer"></span>
       <button class="btn btn-primary btn-sm" onclick="resetUI()">New Extraction</button>
     </div>
@@ -339,9 +486,8 @@ tr:hover td{background:rgba(124,58,237,.03)}
           <tr>
             <th data-sort="filename">File <span class="sort-arrow">▼</span></th>
             <th data-sort="filetype">Type <span class="sort-arrow">▼</span></th>
-            <th data-sort="total_pages">Pages <span class="sort-arrow">▼</span></th>
             <th data-sort="words_found">Words <span class="sort-arrow">▼</span></th>
-            <th data-sort="lang">Lang <span class="sort-arrow">▼</span></th>
+            <th data-sort="backend">Backend <span class="sort-arrow">▼</span></th>
             <th data-sort="created_at">Date <span class="sort-arrow">▼</span></th>
             <th data-sort="avg_confidence">Conf <span class="sort-arrow">▼</span></th>
             <th>Actions</th>
@@ -363,6 +509,7 @@ tr:hover td{background:rgba(124,58,237,.03)}
 <script>
 // --- State ---
 let currentFile = null;
+let currentFileType = 'image';
 let currentJobId = null;
 let currentResult = null;
 let pollTimer = null;
@@ -373,6 +520,12 @@ let historySort = 'created_at';
 let historySortOrder = 'desc';
 let currentVisualPage = 1;
 let totalVisualPages = 1;
+let backendsData = {};
+let engineModesData = {};
+
+const IMAGE_EXTS = ['png','jpg','jpeg','webp','bmp','tiff','gif'];
+const PDF_EXTS = ['pdf'];
+const VIDEO_EXTS = ['mov','mp4','m4v','mkv','webm','avi','mpeg','mpg','wmv','flv','ts','m2ts'];
 
 // --- Elements ---
 const $ = id => document.getElementById(id);
@@ -380,6 +533,7 @@ const uploadZone = $('uploadZone');
 const fileInput = $('fileInput');
 const filePreview = $('filePreview');
 const fileThumb = $('fileThumb');
+const fileIcon = $('fileIcon');
 const fileName = $('fileName');
 const fileMeta = $('fileMeta');
 const extractBtn = $('extractBtn');
@@ -388,12 +542,11 @@ const progressBar = $('progressBar');
 const progressMsg = $('progressMsg');
 const progressTime = $('progressTime');
 const resultsSection = $('resultsSection');
-const pageRangeGroup = $('pageRangeGroup');
-const optThresh = $('optThresh');
 
 // --- Init ---
 document.addEventListener('DOMContentLoaded', () => {
   checkHealth();
+  loadBackends();
   loadHistory();
   setupUpload();
   setupOptions();
@@ -416,11 +569,6 @@ async function checkHealth() {
       badge.className = 'gpu-badge offline';
       text.textContent = 'CPU Mode';
     }
-    if (data.models_downloading) {
-      badge.className = 'gpu-badge downloading';
-      text.textContent = 'Downloading Models...';
-    }
-    // Populate languages
     if (data.supported_langs) {
       const sel = $('optLang');
       sel.innerHTML = '';
@@ -432,9 +580,61 @@ async function checkHealth() {
         sel.appendChild(opt);
       });
     }
+    // Show backend count
+    if (data.backends) {
+      const avail = Object.values(data.backends).filter(b => b.available).length;
+      const total = Object.keys(data.backends).length;
+      const bb = $('backendBadge');
+      bb.style.display = '';
+      bb.className = 'gpu-badge ' + (avail > 0 ? 'online' : 'offline');
+      $('backendCount').textContent = `${avail}/${total} backends`;
+    }
   } catch {
     badge.className = 'gpu-badge offline';
     text.textContent = 'Offline';
+  }
+}
+
+// --- Load Backends ---
+async function loadBackends() {
+  try {
+    const res = await fetch('/backends');
+    const data = await res.json();
+    backendsData = data.backends || {};
+    engineModesData = data.engine_modes || {};
+
+    // Populate backend selector
+    const sel = $('optBackend');
+    sel.innerHTML = '';
+    Object.entries(backendsData).forEach(([key, info]) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      const status = info.available ? '' : ' ⚠️ unavailable';
+      opt.textContent = `${info.label}${status}`;
+      opt.disabled = !info.available;
+      if (key === 'paddle') opt.selected = true;
+      sel.appendChild(opt);
+    });
+
+    // Update engine mode hints
+    sel.addEventListener('change', updateBackendStatus);
+    updateBackendStatus();
+  } catch(e) {
+    console.warn('Failed to load backends:', e);
+  }
+}
+
+function updateBackendStatus() {
+  const key = $('optBackend').value;
+  const info = backendsData[key];
+  const statusEl = $('backendAvailStatus');
+  if (info && info.available) {
+    statusEl.className = 'backend-status available';
+    statusEl.innerHTML = '<span class="dot"></span> <span>Available</span>';
+  } else {
+    statusEl.className = 'backend-status unavailable';
+    const err = info ? (info.error || 'Not installed') : 'Unknown';
+    statusEl.innerHTML = `<span class="dot"></span> <span>${err}</span>`;
   }
 }
 
@@ -463,53 +663,78 @@ function setupUpload() {
 
 function handleFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
-  const allowed = ['png','jpg','jpeg','webp','bmp','tiff','gif','pdf'];
-  if (!allowed.includes(ext)) {
+  const allExts = [...IMAGE_EXTS, ...PDF_EXTS, ...VIDEO_EXTS];
+  if (!allExts.includes(ext)) {
     showToast('Unsupported file format', 'error');
     return;
   }
+
   currentFile = file;
+  if (IMAGE_EXTS.includes(ext)) currentFileType = 'image';
+  else if (PDF_EXTS.includes(ext)) currentFileType = 'pdf';
+  else currentFileType = 'video';
+
   fileName.textContent = file.name;
   const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-  fileMeta.textContent = `${sizeMB} MB · ${ext.toUpperCase()}`;
+  fileMeta.textContent = `${sizeMB} MB · ${ext.toUpperCase()} · ${currentFileType}`;
 
-  if (ext === 'pdf') {
-    fileThumb.style.display = 'none';
-    const pdfIcon = document.createElement('div');
-    pdfIcon.className = 'file-thumb pdf-icon';
-    pdfIcon.textContent = '📕';
-    pdfIcon.id = 'pdfIconEl';
-    const existing = document.getElementById('pdfIconEl');
-    if (existing) existing.remove();
-    filePreview.insertBefore(pdfIcon, filePreview.firstChild);
-    pageRangeGroup.style.display = '';
+  // Show appropriate icon
+  fileThumb.style.display = 'none';
+  fileIcon.style.display = 'none';
+
+  if (currentFileType === 'video') {
+    fileIcon.style.display = 'flex';
+    fileIcon.className = 'file-thumb-icon video';
+    fileIcon.textContent = '🎬';
+  } else if (currentFileType === 'pdf') {
+    fileIcon.style.display = 'flex';
+    fileIcon.className = 'file-thumb-icon pdf';
+    fileIcon.textContent = '📕';
   } else {
-    const existing = document.getElementById('pdfIconEl');
-    if (existing) existing.remove();
     fileThumb.style.display = '';
     const reader = new FileReader();
     reader.onload = e => fileThumb.src = e.target.result;
     reader.readAsDataURL(file);
-    pageRangeGroup.style.display = 'none';
   }
 
   $('uploadPrompt').style.display = 'none';
   filePreview.classList.add('visible');
   uploadZone.classList.add('has-file');
   extractBtn.disabled = false;
+
+  // Show/hide video-specific options
+  updateVideoOptions();
+}
+
+function updateVideoOptions() {
+  const isVideo = currentFileType === 'video';
+  const videoEls = ['videoOptionsLabel','strategyGroup','fpsGroup','maxWidthGroup',
+                    'maxFramesGroup','dedupeFramesGroup','dedupeLinesGroup','debugGroup'];
+  videoEls.forEach(id => {
+    const el = $(id);
+    if (el) el.style.display = isVideo ? '' : 'none';
+  });
+
+  // Show page range for PDFs
+  $('pageRangeGroup').style.display = currentFileType === 'pdf' ? '' : 'none';
+
+  // Update button text
+  extractBtn.textContent = isVideo ? '🎬 Extract Text from Video' : 'Extract Text';
 }
 
 function clearFile() {
   currentFile = null;
+  currentFileType = 'image';
   fileInput.value = '';
   $('uploadPrompt').style.display = '';
   filePreview.classList.remove('visible');
   uploadZone.classList.remove('has-file');
   extractBtn.disabled = true;
-  pageRangeGroup.style.display = 'none';
-  const existing = document.getElementById('pdfIconEl');
-  if (existing) existing.remove();
-  fileThumb.style.display = '';
+  extractBtn.textContent = 'Extract Text';
+  $('pageRangeGroup').style.display = 'none';
+  fileThumb.style.display = 'none';
+  fileIcon.style.display = 'none';
+  updateVideoOptions();
 }
 
 // --- Options ---
@@ -520,8 +745,25 @@ function setupOptions() {
     panel.classList.toggle('visible');
     arrow.classList.toggle('open');
   });
-  optThresh.addEventListener('input', () => {
-    $('threshVal').textContent = optThresh.value;
+  $('optThresh').addEventListener('input', () => {
+    $('threshVal').textContent = $('optThresh').value;
+  });
+  $('optFps').addEventListener('input', () => {
+    $('fpsVal').textContent = $('optFps').value;
+  });
+  $('optQuality').addEventListener('change', () => {
+    const q = $('optQuality').value;
+    $('maxWarning').classList.toggle('visible', q === 'max');
+  });
+  $('optEngineMode').addEventListener('change', () => {
+    const mode = $('optEngineMode').value;
+    const hints = {
+      'single': 'Run one selected backend.',
+      'cascade': 'Run primary backend; use fallback on low-confidence frames.',
+      'consensus': 'Run multiple backends and merge by confidence.',
+      'maximum-recall': 'Run all available backends and keep all unique lines.',
+    };
+    $('engineModeHint').textContent = hints[mode] || '';
   });
 }
 
@@ -544,12 +786,26 @@ async function startExtraction() {
   const formData = new FormData();
   formData.append('file', currentFile);
   formData.append('lang', $('optLang').value);
-  formData.append('output_format', $('optFormat').value);
+  formData.append('backend', $('optBackend').value);
+  formData.append('engine_mode', $('optEngineMode').value);
+  formData.append('quality_mode', $('optQuality').value);
   formData.append('preserve_layout', $('optLayout').checked);
-  formData.append('use_angle_cls', $('optAngle').checked);
-  formData.append('det_db_thresh', optThresh.value);
-  const pages = $('optPages').value;
-  if (pages) formData.append('page_range', pages);
+
+  if (currentFileType === 'video') {
+    formData.append('video_strategy', $('optStrategy').value);
+    formData.append('video_fps', $('optFps').value);
+    formData.append('max_width', $('optMaxWidth').value);
+    const maxFrames = $('optMaxFrames').value;
+    if (maxFrames) formData.append('max_frames', maxFrames);
+    formData.append('dedupe_frames', $('optDedupeFrames').checked);
+    formData.append('dedupe_lines', $('optDedupeLines').checked);
+    formData.append('keep_debug_frames', $('optDebug').checked);
+  }
+
+  if (currentFileType === 'pdf') {
+    const pages = $('optPages').value;
+    if (pages) formData.append('page_range', pages);
+  }
 
   try {
     const res = await fetch('/ocr', { method: 'POST', body: formData });
@@ -602,15 +858,58 @@ async function loadResult(jobId) {
     const data = await res.json();
     currentResult = data;
 
-    $('statPages').textContent = data.total_pages;
-    $('statWords').textContent = data.words_found.toLocaleString();
-    $('statConf').textContent = data.avg_confidence.toFixed(1) + '%';
-    $('statTime').textContent = data.elapsed.toFixed(1) + 's';
+    const isVideo = data.filetype === 'video';
 
-    totalVisualPages = data.total_pages;
+    // Stats
+    $('statPages').textContent = isVideo ? data.frame_count || '-' : data.total_pages;
+    $('statsRow').querySelector('.stat-card:first-child .stat-label').textContent = isVideo ? 'Frames' : 'Pages';
+    $('statWords').textContent = (data.words_found || 0).toLocaleString();
+    $('statConf').textContent = (data.avg_confidence || 0).toFixed(1) + '%';
+    $('statTime').textContent = (data.elapsed || 0).toFixed(1) + 's';
+
+    // Video stats
+    const vsr = $('videoStatsRow');
+    if (isVideo) {
+      vsr.classList.add('visible');
+      $('statRawFrames').textContent = data.raw_frame_count || '-';
+      $('statFrames').textContent = data.frame_count || '-';
+      $('statDuration').textContent = data.video_duration ? data.video_duration.toFixed(1) + 's' : '-';
+      $('statDeduped').textContent = data.deduped_lines || '-';
+    } else {
+      vsr.classList.remove('visible');
+    }
+
+    // Backend info bar
+    const bib = $('backendInfoBar');
+    if (data.backend && data.backend !== 'paddle') {
+      bib.classList.add('visible');
+    } else if (isVideo) {
+      bib.classList.add('visible');
+    } else {
+      bib.classList.remove('visible');
+    }
+    $('resultBackend').textContent = data.backend || 'paddle';
+    $('resultMode').textContent = data.engine_mode || 'single';
+    $('resultQuality').textContent = data.quality_mode || 'standard';
+
+    // Show/hide video download buttons
+    const exports = data.available_exports || ['txt', 'json', 'csv'];
+    $('dlDeduped').style.display = exports.includes('deduped_txt') ? '' : 'none';
+    $('dlByFrame').style.display = exports.includes('by_frame_txt') ? '' : 'none';
+    $('dlTimestamps').style.display = exports.includes('timestamps_txt') ? '' : 'none';
+    $('dlSrt').style.display = exports.includes('srt') ? '' : 'none';
+    $('dlVtt').style.display = exports.includes('vtt') ? '' : 'none';
+    $('dlMd').style.display = exports.includes('md') ? '' : 'none';
+    $('dlDebug').style.display = exports.includes('debug_json') ? '' : 'none';
+
+    totalVisualPages = data.total_pages || 1;
     currentVisualPage = 1;
     renderTextView(data.text);
-    renderVisualView(data.boxes);
+
+    const boxes = data.boxes;
+    if (Array.isArray(boxes) && boxes.length > 0) {
+      renderVisualView(boxes);
+    }
     updatePageNav();
 
     resultsSection.classList.add('visible');
@@ -634,8 +933,7 @@ function renderVisualView(boxes) {
   const canvas = $('visualCanvas');
   const ctx = canvas.getContext('2d');
 
-  // Filter boxes for current page
-  const pageBoxes = boxes.filter(b => b.page === currentVisualPage);
+  const pageBoxes = boxes.filter(b => (b.page || b.frame_index || 1) === currentVisualPage);
   if (!pageBoxes.length) {
     canvas.width = 400;
     canvas.height = 100;
@@ -647,12 +945,14 @@ function renderVisualView(boxes) {
     return;
   }
 
-  // Calculate canvas size from box extents
   let maxX = 0, maxY = 0;
   pageBoxes.forEach(b => {
-    b.box.forEach(p => {
-      maxX = Math.max(maxX, p[0]);
-      maxY = Math.max(maxY, p[1]);
+    const box = b.box || [];
+    box.forEach(p => {
+      if (Array.isArray(p)) {
+        maxX = Math.max(maxX, p[0] || 0);
+        maxY = Math.max(maxY, p[1] || 0);
+      }
     });
   });
   canvas.width = Math.min(maxX + 40, 1200);
@@ -661,35 +961,33 @@ function renderVisualView(boxes) {
   ctx.fillStyle = '#141620';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Draw boxes
   const colors = ['#7c3aed','#3b82f6','#22c55e','#f59e0b','#ef4444','#ec4899','#06b6d4'];
   pageBoxes.forEach((b, i) => {
+    const box = b.box || [];
+    if (box.length < 2) return;
     const color = colors[i % colors.length];
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.7;
     ctx.beginPath();
-    ctx.moveTo(b.box[0][0], b.box[0][1]);
-    for (let j = 1; j < b.box.length; j++) ctx.lineTo(b.box[j][0], b.box[j][1]);
+    ctx.moveTo(box[0][0], box[0][1]);
+    for (let j = 1; j < box.length; j++) ctx.lineTo(box[j][0], box[j][1]);
     ctx.closePath();
     ctx.stroke();
-
-    // Fill background
     ctx.globalAlpha = 0.08;
     ctx.fillStyle = color;
     ctx.fill();
-
-    // Text label
     ctx.globalAlpha = 1;
     ctx.fillStyle = color;
     ctx.font = '11px "JetBrains Mono", monospace';
-    const label = b.text.substring(0, 40) + (b.text.length > 40 ? '…' : '');
-    ctx.fillText(label, b.box[0][0], b.box[0][1] - 4);
-
-    // Confidence label
-    ctx.fillStyle = '#71717a';
-    ctx.font = '9px "JetBrains Mono", monospace';
-    ctx.fillText((b.confidence * 100).toFixed(0) + '%', b.box[1][0] + 4, b.box[1][1] - 4);
+    const label = (b.text || '').substring(0, 40) + ((b.text || '').length > 40 ? '…' : '');
+    ctx.fillText(label, box[0][0], box[0][1] - 4);
+    const conf = b.confidence != null ? (b.confidence * 100).toFixed(0) + '%' : '';
+    if (conf) {
+      ctx.fillStyle = '#71717a';
+      ctx.font = '9px "JetBrains Mono", monospace';
+      ctx.fillText(conf, box[1][0] + 4, box[1][1] - 4);
+    }
   });
   ctx.globalAlpha = 1;
 }
@@ -752,6 +1050,8 @@ function resetUI() {
   clearFile();
   progressSection.classList.remove('visible');
   resultsSection.classList.remove('visible');
+  $('backendInfoBar').classList.remove('visible');
+  $('videoStatsRow').classList.remove('visible');
   currentJobId = null;
   currentResult = null;
   if (pollTimer) clearTimeout(pollTimer);
@@ -768,7 +1068,7 @@ async function loadHistory() {
     const tbody = $('historyBody');
 
     if (data.total === 0) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No OCR jobs yet. Upload a file to get started.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No OCR jobs yet. Upload a file to get started.</td></tr>';
       $('pagination').style.display = 'none';
       return;
     }
@@ -778,17 +1078,18 @@ async function loadHistory() {
       const dateStr = j.created_at ? new Date(j.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-';
       const displayName = j.display_name || j.filename;
       const shortName = displayName.length > 25 ? displayName.substring(0, 22) + '…' : displayName;
+      const ft = j.filetype || 'image';
+      const backend = j.backend || 'paddle';
       return `<tr>
         <td title="${displayName}">${shortName}</td>
-        <td><span class="type-badge ${j.filetype}">${j.filetype}</span></td>
-        <td>${j.total_pages || '-'}</td>
+        <td><span class="type-badge ${ft}">${ft}</span></td>
         <td>${j.words_found ? j.words_found.toLocaleString() : '-'}</td>
-        <td>${j.lang || '-'}</td>
+        <td>${backend}</td>
         <td>${dateStr}</td>
-        <td><span class="confidence-bar"><span style="width:${j.avg_confidence}%;background:${confColor}"></span></span>${j.avg_confidence ? j.avg_confidence.toFixed(0) + '%' : '-'}</td>
+        <td><span class="confidence-bar"><span style="width:${j.avg_confidence || 0}%;background:${confColor}"></span></span>${j.avg_confidence ? j.avg_confidence.toFixed(0) + '%' : '-'}</td>
         <td class="actions-cell">
           ${j.status === 'completed' ? `<button onclick="viewHistoryResult('${j.id}')" title="View">👁</button>
-          <button onclick="downloadResult('txt');currentJobId='${j.id}'" title="Download">📥</button>` : ''}
+          <button onclick="currentJobId='${j.id}';downloadResult('txt')" title="Download">📥</button>` : ''}
           <button class="delete" onclick="deleteJob('${j.id}')" title="Delete">🗑</button>
         </td>
       </tr>`;
@@ -803,7 +1104,7 @@ async function loadHistory() {
       $('pagination').style.display = 'none';
     }
   } catch {
-    $('historyBody').innerHTML = '<tr><td colspan="8" class="empty-state">Failed to load history</td></tr>';
+    $('historyBody').innerHTML = '<tr><td colspan="7" class="empty-state">Failed to load history</td></tr>';
   }
 }
 

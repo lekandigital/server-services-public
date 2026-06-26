@@ -1,0 +1,15 @@
+# Optional OCR backends for multi-engine support
+# Install with: pip3 install -r requirements-extra-ocr.txt
+#
+# Note: tesseract requires a system package:
+#   sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+
+easyocr
+python-doctr[torch]
+rapidocr-onnxruntime
+onnxruntime-gpu
+transformers
+accelerate
+bitsandbytes
+surya-ocr
+pytesseract

@@ -11,7 +11,7 @@ All services running on the home server, organized for deployment on any Ubuntu 
 │  :8001  🏠  Server Portal      (Python/Flask)       │
 │  :8002  🦙  Ollama GUI         (Vue/Docker)         │
 │  :8003  🤖  Twitter Bot Dash   (Python/Flask)       │
-│  :8004  🎬  Cast Manager       (Node.js/Express)    │
+│  :8004  📁  File Manager + Drive (Node.js/Express)  │
 │  :8005  🎙️  Whisper Transcriber (Python/Flask+GPU)  │
 │  :8006  🔍  OCR Engine         (Python/Flask+GPU)   │
 │  :8007  📊  System Stats       (Python/Flask)       │
@@ -19,6 +19,7 @@ All services running on the home server, organized for deployment on any Ubuntu 
 │  :8009  📡  X-Bot Portal       (Uvicorn launcher)   │
 │  :8010  🎥  VLC Stream         (directory indicator)│
 │  :8011  🔐  Proton VPN Portal  (Python/Flask)       │
+│  :8012  📄  PDF Portal         (Flask+WeasyPrint)   │
 │                                                     │
 │  Services managed by systemd                        │
 │  VLC is shown as a non-clickable listener indicator │
@@ -37,8 +38,9 @@ All services running on the home server, organized for deployment on any Ubuntu 
 ### Twitter Bot — Automation Dashboard
 ![Twitter Bot](screenshots/twitter-bot-dashboard.png)
 
-### Cast Manager — Media & Torrents
-![Cast Manager](screenshots/cast-manager-home.png)
+### File Manager — Casting + LAN Server Drive
+
+File Manager preserves its media, device, casting, streaming, and subtitle workflows while adding a native Drive section for permission-aware file management from the persistent library up to `/`.
 
 > See each service's README for more screenshots: [Whisper Transcriber](whisper-transcriber/), [OCR Engine](ocr-engine/), [Ollama GUI](ollama-gui/)
 
@@ -51,8 +53,8 @@ sudo ./deploy.sh <username> /home/<username>/server-services
 ```
 
 The deploy script will:
-1. Install system packages (Python 3, Node.js 20, Chrome, Docker, ffmpeg, poppler)
-2. Install pip/npm dependencies for each service
+1. Install system packages (Python 3, Chrome, Docker, ffmpeg, poppler)
+2. Install Python dependencies for each service
 3. Build and start Ollama GUI via Docker Compose
 4. Create and enable systemd units for all services
 5. Start everything
@@ -64,7 +66,7 @@ The deploy script will:
 | 8001 | [Server Portal](server-portal/) | Python/Flask | `server-portal/` |
 | 8002 | [Ollama GUI](ollama-gui/) | Vue/Vite + Docker | `ollama-gui/` |
 | 8003 | [Twitter Bot Dashboard](twitter-bot/) | Python/Flask + Selenium | `twitter-bot/` |
-| 8004 | [Cast Manager](cast-manager/) | Node.js/Express | `cast-manager/` |
+| 8004 | [File Manager + Drive](cast-manager/) | Node.js/Express + Vue | `/home/REDACTED_USER/cast_manager_v3` |
 | 8005 | [Whisper Transcriber](whisper-transcriber/) | Python/Flask + CUDA | `whisper-transcriber/` |
 | 8006 | [OCR Engine](ocr-engine/) | Python/Flask + CUDA | `ocr-engine/` |
 | 8007 | [System Stats](system-stats/) | Python/Flask | `system-stats/` |
@@ -72,6 +74,23 @@ The deploy script will:
 | 8009 | [X-Bot Portal](xbot-portal/) | systemd launcher for Uvicorn | `xbot-portal/` |
 | 8010 | VLC Stream | Listener indicator only | external |
 | 8011 | [Proton VPN Portal](vpn-portal/) | Python/Flask + Proton CLI | `vpn-portal/` |
+| 8012 | [PDF Portal](https://github.com/lekandigital/pdf-gen) | Python/Flask + WeasyPrint | external: `lekandigital/pdf-gen` |
+
+PDF Portal is an independent project. Deploy it separately from `lekandigital/pdf-gen`; this repository only links to and monitors its `pdf-portal.service`. Port 8012 is used on this host because 8009 is occupied by X-Bot Portal and 8010–8011 are already reserved.
+
+```bash
+git clone https://github.com/lekandigital/pdf-gen.git /home/<username>/pdf-gen
+cd /home/<username>/pdf-gen
+sudo ./deploy.sh <username> /home/<username>/pdf-gen 8012
+```
+
+## Integrated Drive storage and security
+
+File Manager is deployed at `http://REDACTED_SERVER_IP:8004` as `cast-manager.service`. Its integrated Drive defaults to `/home/REDACTED_USER/file-manager/drive`; deployment creates that folder outside the repository so uploads survive redeploys. No separate process or systemd unit is deployed.
+
+The browser is intentionally not jailed to the drive. It can navigate to `/`, `/home/REDACTED_USER`, `/etc`, and any other directory readable by the configured service user. Hidden files are visible by default. Normal Linux permissions control all reads and writes, and the service runs as the configured user rather than root.
+
+This is a powerful LAN administration tool. Do not expose it publicly without VPN/Tailscale, strict firewall rules, or reverse-proxy authentication. See the [File Manager README](cast-manager/README.md) for Drive configuration and its manual checklist.
 
 ## System Requirements
 
@@ -87,7 +106,7 @@ The deploy script will:
 
 ```bash
 # Check all service status
-sudo systemctl status server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal
+sudo systemctl status server-portal xb-dashboard faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal pdf-portal cast-manager
 
 # Restart a service
 sudo systemctl restart <service-name>
@@ -96,7 +115,7 @@ sudo systemctl restart <service-name>
 journalctl -u <service-name> -f
 
 # Stop all
-for s in server-portal xb-dashboard cast-manager faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal; do sudo systemctl stop $s; done
+for s in server-portal xb-dashboard faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal cast-manager; do sudo systemctl stop $s; done
 ```
 
 ## Private + Public Repo Workflow
@@ -154,14 +173,12 @@ server-services/
 │   ├── xb-dashboard.service
 │   └── README.md
 │
-├── cast-manager/                ← :8004
+├── cast-manager/                ← :8004 (runtime: ~/cast_manager_v3)
 │   ├── server.js
-│   ├── db.js
-│   ├── package.json
-│   ├── public/
-│   ├── routes/
-│   ├── .env
+│   ├── lib/drive-routes.js      (integrated unrestricted Drive APIs)
+│   ├── frontend/src/components/drive/
 │   ├── cast-manager.service
+│   ├── deploy.sh
 │   └── README.md
 │
 ├── whisper-transcriber/         ← :8005

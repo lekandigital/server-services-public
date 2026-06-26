@@ -30,7 +30,16 @@ const { createChromecastProvider } = require('./lib/cast/chromecast-provider');
 const { createAirPlayProvider } = require('./lib/cast/airplay-provider');
 const { createSessionStore } = require('./lib/cast/session-store');
 const { makeProviderDeviceId, stripProviderPrefix } = require('./lib/cast/provider-interface');
+const { loadCastConfig } = require('./lib/cast/config');
+const { createDiagnosticsStore } = require('./lib/cast/diagnostics');
+const { createDeviceProfileStore } = require('./lib/cast/device-profile');
+const { createCastOrchestrator, normalizeSubtitleInput } = require('./lib/cast/orchestrator');
+const { runCastDoctor } = require('./lib/cast/doctor');
+const { runPreflight, buildPreflightResponse } = require('./lib/cast/preflight');
+const { createDebugBundle } = require('./lib/cast/debug-bundle');
+const { createCastWatchdog } = require('./lib/cast/watchdog');
 const { normalizeStarredRow, inferKindFromPath, parentPathOf } = require('./lib/folders/starred');
+const { createDriveRouter } = require('./lib/drive-routes');
 const {
   buildBreadcrumbs,
   getRootLabel,
@@ -57,7 +66,7 @@ const MIME_TYPES = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
   '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.pdf': 'application/pdf', '.txt': 'text/plain', '.srt': 'text/plain',
-  '.vtt': 'text/vtt', '.ass': 'text/plain', '.sub': 'text/plain',
+  '.vtt': 'text/vtt', '.ass': 'text/plain', '.ssa': 'text/plain', '.sub': 'application/octet-stream', '.idx': 'text/plain',
 };
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -67,7 +76,7 @@ function getMimeType(filePath) {
 const FILE_MANAGER_MAX_PREVIEW_BYTES = parseInt(process.env.FILE_MANAGER_MAX_PREVIEW_BYTES || `${1024 * 1024}`, 10);
 const FILE_MANAGER_TEXT_EXTENSIONS = new Set([
   '.txt', '.md', '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.xml',
-  '.yml', '.yaml', '.csv', '.srt', '.vtt', '.ass', '.sub', '.log', '.sh', '.env',
+  '.yml', '.yaml', '.csv', '.srt', '.vtt', '.ass', '.ssa', '.sub', '.idx', '.log', '.sh', '.env',
   '.gitignore', '.dockerignore', '.conf', '.ini', '.toml',
 ]);
 
@@ -81,22 +90,44 @@ const upload = multer({ dest: '/tmp/cast_uploads/' });
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
+
+const CORS_ALLOW_HEADERS = 'Content-Type, Range, Authorization, X-Requested-With, X-Cast-Session, X-Cast-Debug, X-Sudo-Password';
+const CORS_EXPOSE_HEADERS = 'Content-Length, Content-Range, Accept-Ranges, Content-Type';
+
+function applyCors(res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
+  res.header('Access-Control-Allow-Headers', CORS_ALLOW_HEADERS);
+  res.header('Access-Control-Expose-Headers', CORS_EXPOSE_HEADERS);
+}
 
 // CORS for network access
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, X-Sudo-Password');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  applyCors(res);
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-app.get('/file-manager', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+function sendSpaIndex(res) {
+  const indexPath = path.join(__dirname, 'public', 'app', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+  return res.sendFile(path.join(__dirname, 'public_legacy_backup', 'index.html'));
+}
+
+app.use(express.static(path.join(__dirname, 'public', 'app'), { index: false }));
+
+app.get('/', (req, res) => res.redirect(302, '/file-manager/root'));
+app.get('/file-manager', (req, res) => res.redirect(302, '/file-manager/root'));
 
 // Config from env
+const DEFAULT_MEDIA_ROOT = '/home/REDACTED_USER/file-manager/drive/watch_list';
+const configuredDownloadDir = normalizeRoot(process.env.DOWNLOAD_DIR || DEFAULT_MEDIA_ROOT);
+const configuredFileManagerRoot = process.env.FILE_MANAGER_ROOT && process.env.FILE_MANAGER_ROOT !== '/'
+  ? normalizeRoot(process.env.FILE_MANAGER_ROOT)
+  : configuredDownloadDir;
+
 const CFG = {
   sshHost: process.env.SSH_HOST || 'REDACTED_SERVER_IP',
   sshUser: process.env.SSH_USER || 'o',
@@ -104,16 +135,79 @@ const CFG = {
   sshKeyPath: process.env.SSH_PRIVATE_KEY_PATH || process.env.SSH_KEY_PATH || '',
   transUser: process.env.TRANSMISSION_USER || 'transmission',
   transPass: process.env.TRANSMISSION_PASS || '',
-  downloadDir: process.env.DOWNLOAD_DIR || '/home/REDACTED_USER/watch_list',
-  fileManagerRoot: normalizeRoot(process.env.FILE_MANAGER_ROOT || '/'),
-  fileManagerRootLabel: process.env.FILE_MANAGER_ROOT_LABEL || 'System Root',
+  downloadDir: configuredDownloadDir,
+  fileManagerRoot: configuredFileManagerRoot,
+  fileManagerRootLabel: process.env.FILE_MANAGER_ROOT_LABEL || 'Media Library',
   trashDir: normalizeRoot(process.env.TRASH_DIR || '/home/REDACTED_USER/.cast_manager/trash'),
   chromecastName: process.env.CHROMECAST_NAME || 'REDACTED_DEVICE',
   cattPath: process.env.CATT_PATH || '/home/REDACTED_USER/.local/bin/catt',
   port: parseInt(process.env.PORT || '8004', 10),
   publicHost: process.env.CAST_PUBLIC_HOST || process.env.SSH_HOST || 'REDACTED_SERVER_IP',
 };
-CFG.fileManagerRootLabel = CFG.fileManagerRootLabel || getRootLabel(CFG.fileManagerRoot, 'System Root');
+CFG.fileManagerRootLabel = CFG.fileManagerRootLabel || getRootLabel(CFG.fileManagerRoot, 'Media Library');
+
+// ─── File Manager path constants ─────────────────────────────
+const FILE_MANAGER_BASE_DIR = `/home/${CFG.sshUser}/file-manager`;
+const DRIVE_ROOT = process.env.FILE_MANAGER_LIBRARY || `${FILE_MANAGER_BASE_DIR}/drive`;
+const MEDIA_LIBRARY_ROOT = CFG.downloadDir; // typically /home/REDACTED_USER/watch_list
+const FILE_MANAGER_ROOT_ROUTE = '/file-manager/root';
+
+// Ensure Drive root exists on startup.
+try { fs.mkdirSync(DRIVE_ROOT, { recursive: true }); } catch (_) {}
+
+// The unrestricted server Drive is a native File Manager feature. Its routes are
+// intentionally separate from the media-root browser below so casting and media
+// library behavior retain their existing safety and compatibility contracts.
+app.use(createDriveRouter({
+  libraryPath: DRIVE_ROOT,
+  homeDir: `/home/${CFG.sshUser}`,
+  currentUser: CFG.sshUser,
+}));
+
+function configuredPathList(value) {
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function safeRootId(input, fallback) {
+  const value = String(input || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return value || fallback;
+}
+
+function buildConfiguredFileRoots() {
+  const specs = [
+    { id: 'drive', label: 'Drive', serverPath: DRIVE_ROOT, routePrefix: '/file-manager/drive' },
+    { id: 'watch_list', label: 'Media Library', serverPath: '/home/REDACTED_USER/file-manager/drive/watch_list', routePrefix: '/file-manager/library' },
+    { id: 'downloads', label: 'Downloads', serverPath: '/home/REDACTED_USER/downloads', routePrefix: '/file-manager/user/o/downloads' },
+    { id: 'Downloads', label: 'Downloads (capital D)', serverPath: '/home/REDACTED_USER/Downloads', routePrefix: '/file-manager/user/o/Downloads' },
+  ];
+  const configured = [
+    CFG.downloadDir,
+    CFG.fileManagerRoot,
+    ...configuredPathList(process.env.FILE_MANAGER_ROOTS),
+    ...configuredPathList(process.env.MEDIA_DIRS),
+    ...configuredPathList(process.env.DOWNLOAD_DIRS),
+  ];
+  const seenPaths = new Set(specs.map((root) => normalizeRoot(root.serverPath)));
+  const seenIds = new Set(specs.map((root) => root.id));
+  configured.forEach((rawPath, index) => {
+    let serverPath;
+    try { serverPath = normalizeRoot(rawPath); } catch (_) { return; }
+    if (serverPath === '/' || seenPaths.has(serverPath) || CRITICAL_SYSTEM_PATHS.has(serverPath)) return;
+    let id = safeRootId(path.posix.basename(serverPath), `configured_${index + 1}`);
+    while (seenIds.has(id)) id = `${id}_${index + 1}`;
+    specs.push({
+      id,
+      label: serverPath === CFG.downloadDir ? 'Media Library' : getRootLabel(serverPath, 'Files'),
+      serverPath,
+      routePrefix: `/file-manager/root/${encodeURIComponent(id)}`,
+    });
+    seenPaths.add(serverPath);
+    seenIds.add(id);
+  });
+  return specs;
+}
+
+let FILE_ROOTS = [];
 
 function getSshConfig() {
   const config = {
@@ -163,6 +257,22 @@ const CRITICAL_SYSTEM_PATHS = new Set([
   '/var',
 ]);
 
+FILE_ROOTS = buildConfiguredFileRoots();
+
+function defaultFileRoot() {
+  return FILE_ROOTS.find((root) => root.serverPath === CFG.downloadDir)
+    || FILE_ROOTS.find((root) => root.id === 'watch_list')
+    || FILE_ROOTS[0];
+}
+
+function fileRootForPath(filePath) {
+  let normalized;
+  try { normalized = normalizeAbsolutePath(filePath); } catch (_) { return null; }
+  return [...FILE_ROOTS]
+    .filter((root) => isInsideRoot(root.serverPath, normalized))
+    .sort((a, b) => b.serverPath.length - a.serverPath.length)[0] || null;
+}
+
 const VIRTUAL_USAGE_PATHS = new Set(['/dev', '/proc', '/run', '/sys']);
 
 function getSudoPassword(req) {
@@ -184,26 +294,36 @@ function commandFailure(code, stderr, fallbackCode, fallbackMessage) {
   return makeFileManagerError(fallbackCode, fallbackMessage);
 }
 
-// Path safety check: all file-manager operations are restricted to CFG.fileManagerRoot.
+// Every file-manager operation is restricted to an explicit media/download root.
 function isPathSafe(filePath) {
   try {
-    const resolved = resolveSafePath(CFG.fileManagerRoot, filePath);
-    return isInsideRoot(CFG.fileManagerRoot, resolved);
+    const normalized = normalizeAbsolutePath(filePath);
+    return !!fileRootForPath(normalized);
   } catch (_) {
     return false;
   }
 }
 
 function normalizeFileManagerPath(filePath) {
-  return resolveSafePath(CFG.fileManagerRoot, filePath || CFG.fileManagerRoot);
+  const fallbackRoot = defaultFileRoot();
+  if (!fallbackRoot) throw makeFileManagerError('INVALID_PATH', 'No safe file roots are configured');
+  const raw = String(filePath || '').trim();
+  const normalized = !raw || raw === '/'
+    ? fallbackRoot.serverPath
+    : (path.posix.isAbsolute(raw) ? normalizeAbsolutePath(raw) : resolveSafePath(fallbackRoot.serverPath, raw));
+  if (!fileRootForPath(normalized)) {
+    throw makeFileManagerError('INVALID_PATH', 'Path is outside the configured media and download roots');
+  }
+  return normalized;
 }
 
 function isRootPath(filePath) {
-  return normalizeFileManagerPath(filePath) === CFG.fileManagerRoot;
+  const normalized = normalizeFileManagerPath(filePath);
+  const root = fileRootForPath(normalized);
+  return !!root && normalized === root.serverPath;
 }
 
 function isCriticalSystemPath(filePath) {
-  if (CFG.fileManagerRoot !== '/') return false;
   return CRITICAL_SYSTEM_PATHS.has(normalizeFileManagerPath(filePath));
 }
 
@@ -256,6 +376,8 @@ function makeFileManagerError(code, message) {
 
 async function assertRemotePathInsideRoot(filePath, options = {}) {
   const normalized = normalizeFileManagerPath(filePath);
+  const requestedRoot = fileRootForPath(normalized);
+  if (!requestedRoot) throw makeFileManagerError('INVALID_PATH', 'Path is outside the configured file roots');
   const requireExists = options.requireExists !== false;
   const realCmd = requireExists
     ? `realpath -e -- ${escCmd(normalized)}`
@@ -269,10 +391,23 @@ async function assertRemotePathInsideRoot(filePath, options = {}) {
     throw makeFileManagerError('NOT_FOUND', 'File or folder was not found');
   }
   const realPath = normalizeAbsolutePath(stdout || normalized);
-  if (!isInsideRoot(CFG.fileManagerRoot, realPath)) {
-    throw makeFileManagerError('INVALID_PATH', 'Resolved path is outside the configured file-manager root');
+  // Check against the logical root path first (fast path for non-symlink roots).
+  if (isInsideRoot(requestedRoot.serverPath, realPath)) return normalized;
+  // The root's serverPath may itself be a symlink — resolve it and re-check.
+  try {
+    const rootRealCmd = `${sudoPrefix}realpath -e -- ${escCmd(requestedRoot.serverPath)}`;
+    const rootResult = await sshExec(rootRealCmd, 8000);
+    if (rootResult.code === 0 && rootResult.stdout) {
+      const resolvedRoot = normalizeAbsolutePath(rootResult.stdout);
+      if (isInsideRoot(resolvedRoot, realPath)) return normalized;
+    }
+  } catch (_) { /* root resolution failed — continue to fallback */ }
+  // Fallback: check if the resolved path lives inside any other configured root.
+  for (const root of FILE_ROOTS) {
+    if (root.id === requestedRoot.id) continue;
+    if (isInsideRoot(root.serverPath, realPath)) return normalized;
   }
-  return normalized;
+  throw makeFileManagerError('INVALID_PATH', 'Resolved path is outside the configured file-manager root');
 }
 
 async function assertParentPathInsideRoot(filePath, options = {}) {
@@ -283,16 +418,27 @@ async function assertParentPathInsideRoot(filePath, options = {}) {
 }
 
 function ensureNotProtectedFile(filePath, action = 'access') {
-  if (isProtectedPath(CFG.fileManagerRoot, filePath)) {
+  const root = fileRootForPath(filePath);
+  if (!root || isProtectedPath(root.serverPath, filePath)) {
     throw makeFileManagerError('PROTECTED_FILE', `Protected files cannot be ${action} from the file manager`);
   }
+}
+
+function isFilePathProtected(filePath) {
+  const root = fileRootForPath(filePath);
+  return !root || isProtectedPath(root.serverPath, filePath);
+}
+
+function isFilePathHidden(filePath) {
+  const root = fileRootForPath(filePath);
+  return !root || hasHiddenSegment(root.serverPath, filePath);
 }
 
 function classifyFileType(type, name) {
   const ext = path.extname(name).toLowerCase();
   const videoExts = ['.mkv', '.mp4', '.avi', '.mov', '.webm', '.m4v', '.ts', '.flv', '.wmv'];
   const audioExts = ['.mp3', '.flac', '.m4a', '.aac', '.ogg', '.wav', '.opus', '.wma'];
-  const subExts = ['.srt', '.ass', '.vtt', '.sub'];
+  const subExts = ['.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx'];
   const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp'];
   if (type === 'd') return 'folder';
   if (type === 'l') return 'symlink';
@@ -317,11 +463,12 @@ function buildFileMetadata(filePath, type, size, mtime, itemCount) {
   const name = path.basename(filePath);
   const ext = path.extname(name).toLowerCase();
   const fileType = classifyFileType(type, name);
-  const hidden = hasHiddenSegment(CFG.fileManagerRoot, filePath) || name.startsWith('.');
+  const root = fileRootForPath(filePath) || defaultFileRoot();
+  const hidden = hasHiddenSegment(root.serverPath, filePath) || name.startsWith('.');
   return {
     name,
     path: filePath,
-    relativePath: toRelativePath(CFG.fileManagerRoot, filePath),
+    relativePath: toRelativePath(root.serverPath, filePath),
     type: fileType,
     size: parseInt(size, 10) || 0,
     mtime: parseFloat(mtime) || 0,
@@ -331,7 +478,7 @@ function buildFileMetadata(filePath, type, size, mtime, itemCount) {
     mimeType: getMimeType(filePath),
     isHidden: hidden,
     hidden,
-    protected: isProtectedPath(CFG.fileManagerRoot, filePath),
+    protected: isProtectedPath(root.serverPath, filePath),
     itemCount,
   };
 }
@@ -459,7 +606,12 @@ async function getNormalizedCastStatus() {
     receiverReachable: true,
     activeSession,
     lastCommandAt,
+    lastKnownTime: Math.max(0, Number(activeCastSession.lastKnownTime) || 0),
     fallbackAvailable,
+    backend: activeCastSession.backend || null,
+    seekInProgress: false,
+    starting: false,
+    restarting: false,
   };
 
   try {
@@ -508,10 +660,17 @@ async function getNormalizedCastStatus() {
         activeCastSession.duration = base.duration;
       }
       if (base.title) {
-        // Store original title internally (may be URL); response is sanitized.
         activeCastSession.title = parsedTitle || activeCastSession.title;
       }
-      activeCastSession.state = base.state;
+      const normalized = normalizeCastState(base.state);
+      const recentCommand = Date.now() - (activeCastSession.lastCommandAt || 0) < 8000;
+      if (normalized === 'idle' && recentCommand) {
+        base.state = normalizeCastState(activeCastSession.state) || 'buffering';
+        base.restarting = true;
+      } else {
+        activeCastSession.state = normalized;
+        base.state = normalized;
+      }
     }
 
     return base;
@@ -575,7 +734,9 @@ function mediaLog(msg) {
 // id -> { filePath, kind: 'sidecar'|'embedded', sidecarPath?, streamIndex?, label, createdAt }
 const subtitleIndex = new Map();
 const SUBTITLE_INDEX_TTL_MS = 30 * 60 * 1000;
-const SUBTITLE_FILE_EXTENSIONS = new Set(['.srt', '.ass', '.vtt', '.sub']);
+const SUBTITLE_FILE_EXTENSIONS = new Set(['.srt', '.ass', '.ssa', '.vtt', '.sub', '.idx']);
+const VOBSUB_EXTENSIONS = new Set(['.idx', '.sub']);
+const SUBTITLE_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
 
 function pruneSubtitleIndex() {
   const now = Date.now();
@@ -591,7 +752,10 @@ function buildSubtitleUrl(req, subtitleId) {
   return url;
 }
 
-async function ensureSubtitleVttRemote({ filePath, subtitleId, kind, sidecarPath, streamIndex } = {}) {
+async function ensureSubtitleVttRemote({ filePath, subtitleId, kind, sidecarPath, streamIndex, imageBased = false } = {}) {
+  if (imageBased) {
+    throw makeFileManagerError('UNSUPPORTED_FILE', 'VobSub IDX/SUB subtitles are image-based and must use Burn in subtitles');
+  }
   const outDir = '/tmp/cast_subtitles_v1';
   const outPath = `${outDir}/${subtitleId}.vtt`;
   await sshExec(`mkdir -p ${escCmd(outDir)}`);
@@ -610,24 +774,146 @@ async function ensureSubtitleVttRemote({ filePath, subtitleId, kind, sidecarPath
   return outPath;
 }
 
-async function registerCustomSubtitlePath(filePath, subtitlePath) {
-  const safeSubtitlePath = await assertRemotePathInsideRoot(subtitlePath);
-  ensureNotProtectedFile(safeSubtitlePath, 'read');
+function subtitleSourceExtension(source) {
+  const raw = String(source || '').trim();
+  if (/^https?:\/\//i.test(raw)) {
+    try { return path.extname(new URL(raw).pathname).toLowerCase(); } catch (_) { return ''; }
+  }
+  return path.extname(raw).toLowerCase();
+}
+
+function pairedSubtitleSource(source, extension) {
+  const raw = String(source || '').trim();
+  if (/^https?:\/\//i.test(raw)) {
+    const url = new URL(raw);
+    url.pathname = url.pathname.replace(/\.(idx|sub)$/i, extension);
+    return url.toString();
+  }
+  return raw.replace(/\.(idx|sub)$/i, extension);
+}
+
+async function downloadWebSubtitleSource(source) {
+  let parsed;
+  try { parsed = new URL(String(source || '').trim()); }
+  catch (_) { throw makeFileManagerError('INVALID_PATH', 'Enter a complete HTTP or HTTPS subtitle URL'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+    throw makeFileManagerError('INVALID_PATH', 'Subtitle URL must use HTTP or HTTPS without embedded credentials');
+  }
+  const ext = subtitleSourceExtension(parsed.toString());
+  if (!SUBTITLE_FILE_EXTENSIONS.has(ext)) {
+    throw makeFileManagerError('UNSUPPORTED_FILE', 'Subtitle URL must end in SRT, ASS, SSA, VTT, SUB, or IDX');
+  }
+  const outDir = '/tmp/cast_subtitle_sources_v1';
+  const cacheSource = VOBSUB_EXTENSIONS.has(ext) ? pairedSubtitleSource(parsed.toString(), '.pair') : parsed.toString();
+  const sourceId = stableHash(JSON.stringify({ v: 1, source: cacheSource }));
+  const outputPath = `${outDir}/${sourceId}${ext}`;
+  const tempPath = `${outputPath}.part`;
+  await sshExec(`mkdir -p ${escCmd(outDir)}`);
+  const download = await sshExec(
+    `curl --fail --location --silent --show-error --max-time 30 --proto '=http,https' --proto-redir '=http,https' --max-filesize ${SUBTITLE_DOWNLOAD_MAX_BYTES} -o ${escCmd(tempPath)} ${escCmd(parsed.toString())} && test "$(stat -c%s ${escCmd(tempPath)})" -le ${SUBTITLE_DOWNLOAD_MAX_BYTES} && mv -f ${escCmd(tempPath)} ${escCmd(outputPath)}`,
+    45000
+  );
+  if (download.code !== 0) {
+    await sshExec(`rm -f ${escCmd(tempPath)}`).catch(() => undefined);
+    throw makeFileManagerError('READ_FAILED', `Could not download subtitle URL: ${download.stderr || 'download failed'}`);
+  }
+  return outputPath;
+}
+
+async function normalizeVobSubPath(subtitlePath) {
+  const ext = path.extname(subtitlePath).toLowerCase();
+  if (!VOBSUB_EXTENSIONS.has(ext)) return { sidecarPath: subtitlePath, imageBased: false, pairPath: null };
+  const idxPath = subtitlePath.replace(/\.(idx|sub)$/i, '.idx');
+  const subPath = subtitlePath.replace(/\.(idx|sub)$/i, '.sub');
+  const pairCheck = await sshExec(`test -f ${escCmd(idxPath)} && test -f ${escCmd(subPath)} && echo paired`);
+  if (!String(pairCheck.stdout || '').includes('paired')) {
+    if (ext === '.idx') throw makeFileManagerError('NOT_FOUND', 'VobSub IDX subtitles require the matching SUB file beside them');
+    return { sidecarPath: subtitlePath, imageBased: false, pairPath: null };
+  }
+  return { sidecarPath: idxPath, imageBased: true, pairPath: subPath };
+}
+
+async function registerCustomSubtitlePath(filePath, subtitleSource, labelPrefix = 'Custom') {
+  const rawSource = String(subtitleSource || '').trim();
+  if (!rawSource) throw makeFileManagerError('INVALID_PATH', 'Subtitle file path or web URL is required');
+  const isWeb = /^https?:\/\//i.test(rawSource);
+  let safeSubtitlePath;
+  if (isWeb) {
+    const ext = subtitleSourceExtension(rawSource);
+    if (VOBSUB_EXTENSIONS.has(ext)) {
+      const idxPath = await downloadWebSubtitleSource(pairedSubtitleSource(rawSource, '.idx'));
+      const subPath = await downloadWebSubtitleSource(pairedSubtitleSource(rawSource, '.sub'));
+      safeSubtitlePath = ext === '.idx' ? idxPath : subPath;
+    } else {
+      safeSubtitlePath = await downloadWebSubtitleSource(rawSource);
+    }
+  } else {
+    safeSubtitlePath = await assertRemotePathInsideRoot(rawSource);
+    ensureNotProtectedFile(safeSubtitlePath, 'read');
+  }
   const ext = path.extname(safeSubtitlePath).toLowerCase();
   if (!SUBTITLE_FILE_EXTENSIONS.has(ext)) {
-    throw makeFileManagerError('UNSUPPORTED_FILE', 'Subtitle must be an SRT, ASS, VTT, or SUB file');
+    throw makeFileManagerError('UNSUPPORTED_FILE', 'Subtitle must be an SRT, ASS, SSA, VTT, SUB, or IDX file');
   }
   const check = await sshExec(`test -f ${escCmd(safeSubtitlePath)}`);
   if (check.code !== 0) throw makeFileManagerError('NOT_A_FILE', 'Subtitle path is not a file');
-  const id = stableHash(JSON.stringify({ v: 1, kind: 'custom-sidecar', filePath, sidecarPath: safeSubtitlePath }));
+  const normalized = await normalizeVobSubPath(safeSubtitlePath);
+  const id = stableHash(JSON.stringify({ v: 2, kind: 'custom-sidecar', filePath, sidecarPath: normalized.sidecarPath }));
   subtitleIndex.set(id, {
     filePath,
     kind: 'sidecar',
-    sidecarPath: safeSubtitlePath,
-    label: `Custom: ${path.basename(safeSubtitlePath)}`,
+    sidecarPath: normalized.sidecarPath,
+    pairPath: normalized.pairPath,
+    imageBased: normalized.imageBased,
+    source: rawSource,
+    label: `${labelPrefix}: ${isWeb ? path.basename(new URL(rawSource).pathname) : path.basename(normalized.sidecarPath)}`,
     createdAt: Date.now(),
   });
   return id;
+}
+
+async function discoverSubtitlesForFile(filePath) {
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath, path.extname(filePath));
+  const subsDir = path.join(dir, 'Subs');
+  const extensionFilter = `\\( -iname '*.srt' -o -iname '*.ass' -o -iname '*.ssa' -o -iname '*.vtt' -o -iname '*.sub' -o -iname '*.idx' \\)`;
+  const { stdout: sidecarsOut } = await sshExec(
+    `{ find ${escCmd(dir)} -maxdepth 1 -type f -name ${escCmd(`${base}*`)} ${extensionFilter} 2>/dev/null; if test -d ${escCmd(subsDir)}; then find ${escCmd(subsDir)} -maxdepth 1 -type f ${extensionFilter} 2>/dev/null; fi; } | sort -u`
+  );
+  const sidecars = String(sidecarsOut || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  const analysis = await analyzeMediaCompatibility(filePath, 'chromecast', { autoTranscode: 'auto' }, { sshExec });
+  const embedded = (analysis.subtitleStreams || []).map((s) => ({ index: s.index, codec: s.codec, language: s.language }));
+  pruneSubtitleIndex();
+  const now = Date.now();
+  const items = [];
+  const seenSidecars = new Set();
+  for (const p of sidecars) {
+    if (path.extname(p).toLowerCase() === '.sub' && sidecars.includes(p.replace(/\.sub$/i, '.idx'))) continue;
+    const id = await registerCustomSubtitlePath(filePath, p, 'Sidecar');
+    if (seenSidecars.has(id)) continue;
+    seenSidecars.add(id);
+    const indexed = subtitleIndex.get(id);
+    indexed.createdAt = now;
+    items.push({
+      id,
+      kind: 'sidecar',
+      label: indexed.label,
+      sourcePath: indexed.sidecarPath,
+      burnInRequired: !!indexed.imageBased,
+      format: indexed.imageBased ? 'vobsub' : path.extname(indexed.sidecarPath).slice(1).toLowerCase(),
+    });
+  }
+  for (const s of embedded) {
+    const id = stableHash(JSON.stringify({ v: 1, kind: 'embedded', filePath, streamIndex: s.index }));
+    const parts = [];
+    if (s.language) parts.push(String(s.language).toUpperCase());
+    if (s.codec) parts.push(String(s.codec));
+    const meta = parts.length ? ` (${parts.join(', ')})` : '';
+    const label = `Embedded: stream ${s.index}${meta}`;
+    subtitleIndex.set(id, { filePath, kind: 'embedded', streamIndex: s.index, label, createdAt: now });
+    items.push({ id, kind: 'embedded', label, streamIndex: s.index });
+  }
+  return items.sort((a, b) => Number(!!a.burnInRequired) - Number(!!b.burnInRequired) || a.label.localeCompare(b.label));
 }
 
 // Remote ffmpeg runs over SSH; probe the same host capabilities once per process.
@@ -1051,6 +1337,74 @@ function buildLiveStreamUrl(req, jobId) {
   return url;
 }
 
+async function createLiveCastJob({ req, filePath, analysis, startSeconds = 0, title, burnInSubtitlePath = null, burnInSubtitleVttPath = null } = {}) {
+  if (!filePath) throw new Error('filePath required');
+  pruneLiveJobs();
+  const playbackMode = analysis?.playbackMode || 'remux';
+  let vttPath = burnInSubtitleVttPath || null;
+  let bitmapPath = null;
+  if (!vttPath && burnInSubtitlePath) {
+    const { stdout } = await sshExec(`test -f ${escCmd(burnInSubtitlePath)} && echo exists`);
+    if (!String(stdout).includes('exists')) throw new Error(`Burn-in subtitle file missing: ${burnInSubtitlePath}`);
+    if (/\.(idx|sub)$/i.test(String(burnInSubtitlePath))) {
+      const normalized = await normalizeVobSubPath(String(burnInSubtitlePath));
+      if (!normalized.imageBased) throw new Error('VobSub burn-in requires a matching IDX and SUB pair');
+      bitmapPath = normalized.sidecarPath;
+    } else if (String(burnInSubtitlePath).toLowerCase().endsWith('.vtt')) {
+      vttPath = burnInSubtitlePath;
+    } else {
+      const outDir = '/tmp/cast_subtitles_v1';
+      const sid = stableHash(JSON.stringify({ v: 2, burnIn: true, path: burnInSubtitlePath }));
+      vttPath = `${outDir}/${sid}.vtt`;
+      await sshExec(`mkdir -p ${escCmd(outDir)}`);
+      await sshExec(`ffmpeg -y -hide_banner -loglevel error -i ${escCmd(burnInSubtitlePath)} -c:s webvtt ${escCmd(vttPath)}`);
+    }
+  }
+  const jobId = stableHash(JSON.stringify({
+    v: 3,
+    filePath,
+    playbackMode,
+    startSeconds: Math.max(0, Math.floor(Number(startSeconds) || 0)),
+    burnIn: vttPath || bitmapPath || null,
+    t: Date.now(),
+    n: Math.random(),
+  }));
+  const cacheDir = '/tmp/cast_transcodes_v2';
+  await sshExec(`mkdir -p "${cacheDir}"`);
+
+  let liveEncode = null;
+  if (playbackMode === 'full-transcode' && !vttPath && !bitmapPath) {
+    const choice = await resolveLiveFullTranscodeEncoder();
+    const caps = await probeFfmpegCapabilities();
+    liveEncode = choice.encoder === 'h264_nvenc'
+      ? { encoder: 'h264_nvenc', cudaFirst: !!caps.cudaHwaccel }
+      : { encoder: 'libx264' };
+  } else if (vttPath || bitmapPath) {
+    liveEncode = { encoder: 'libx264', reason: 'burn-in-subtitles' };
+  }
+
+  liveCastJobs.set(jobId, {
+    filePath,
+    playbackMode: (vttPath || bitmapPath) && playbackMode === 'remux' ? 'full-transcode' : playbackMode,
+    analysis,
+    createdAt: Date.now(),
+    startSeconds: Math.max(0, Math.floor(Number(startSeconds) || 0)),
+    cacheDir,
+    cachePath: null,
+    liveEncode,
+    burnInSubtitlePath,
+    burnInSubtitleVttPath: vttPath,
+    burnInSubtitleBitmapPath: bitmapPath,
+  });
+
+  return {
+    jobId,
+    streamUrl: buildLiveStreamUrl(req, jobId),
+    backend: 'ffmpeg-live',
+    title: title || path.basename(filePath),
+  };
+}
+
 function makeAnalysisSummary(a) {
   if (!a) return null;
   return {
@@ -1076,25 +1430,36 @@ function shouldUseReForLive(playbackMode) {
   return playbackMode === 'remux' || playbackMode === 'audio-transcode';
 }
 
-function buildLiveFfmpegCmd({ filePath, analysis, startSeconds = 0, teePath, fullTranscodeVariant } = {}) {
+function buildLiveFfmpegCmd({ filePath, analysis, startSeconds = 0, teePath, fullTranscodeVariant, burnInSubtitleVttPath, burnInSubtitleBitmapPath } = {}) {
   const a = analysis || {};
   const ss = Number(startSeconds) > 0 ? `-ss ${Math.max(0, Math.floor(Number(startSeconds) || 0))}` : '';
-  const mapVideo = a.videoStreamIndex != null ? `-map 0:${a.videoStreamIndex}` : '';
+  const mapVideo = burnInSubtitleBitmapPath ? `-map '[vout]'` : (a.videoStreamIndex != null ? `-map 0:${a.videoStreamIndex}` : '');
   const mapAudio = a.audioStreamIndex != null ? `-map 0:${a.audioStreamIndex}` : '';
-  const re = shouldUseReForLive(a.playbackMode) ? '-re' : '';
+  const hasBurnIn = !!(burnInSubtitleVttPath || burnInSubtitleBitmapPath);
+  const re = shouldUseReForLive(a.playbackMode) && !hasBurnIn ? '-re' : '';
   const inputTiming = '-fflags +genpts';
   const outputTiming = '-avoid_negative_ts make_zero -max_interleave_delta 0 -muxdelay 0 -muxpreload 0';
-  const audioTiming = (a.audioStreamIndex != null && ['audio-transcode', 'full-transcode'].includes(a.playbackMode))
+  const burnIn = burnInSubtitleBitmapPath
+    ? `-filter_complex ${escCmd('[0:v][1:s:0]overlay[vout]')}`
+    : (burnInSubtitleVttPath ? `-vf subtitles=${escCmd(String(burnInSubtitleVttPath))}` : '');
+  const effectiveMode = hasBurnIn && a.playbackMode === 'remux' ? 'full-transcode' : a.playbackMode;
+  const audioTiming = (a.audioStreamIndex != null && ['audio-transcode', 'full-transcode'].includes(effectiveMode))
     ? '-af aresample=async=1:first_pts=0'
     : '';
 
   let codecs = '';
   let cudaHw = '';
-  if (a.playbackMode === 'remux') {
+  if (hasBurnIn) {
+    // Subtitles filter requires re-encoding video; NVENC + subtitles filter is unreliable.
+    const audioPart = effectiveMode === 'audio-transcode' || a.playbackMode === 'audio-transcode'
+      ? '-c:a aac -ac 2 -b:a 192k'
+      : (effectiveMode === 'full-transcode' ? '-c:a aac -ac 2 -b:a 192k' : '-c:a copy');
+    codecs = [burnIn, '-c:v libx264 -preset superfast -crf 23', audioPart].filter(Boolean).join(' ');
+  } else if (effectiveMode === 'remux') {
     codecs = '-c:v copy -c:a copy';
-  } else if (a.playbackMode === 'audio-transcode') {
+  } else if (effectiveMode === 'audio-transcode') {
     codecs = '-c:v copy -c:a aac -ac 2 -b:a 192k';
-  } else if (a.playbackMode === 'full-transcode') {
+  } else if (effectiveMode === 'full-transcode') {
     const v = fullTranscodeVariant || 'libx264';
     if (v === 'nvenc_cuda') {
       cudaHw = '-hwaccel cuda -hwaccel_output_format cuda';
@@ -1109,8 +1474,11 @@ function buildLiveFfmpegCmd({ filePath, analysis, startSeconds = 0, teePath, ful
   const mov = '-movflags frag_keyframe+empty_moov+default_base_moof';
   const out = `-f mp4 pipe:1`;
   const input = escCmd(String(filePath || ''));
+  const subtitleInput = burnInSubtitleBitmapPath
+    ? [ss, `-i ${escCmd(String(burnInSubtitleBitmapPath))}`].filter(Boolean).join(' ')
+    : '';
 
-  const tail = [cudaHw, inputTiming, ss, `-i ${input}`, mapVideo, mapAudio, codecs, audioTiming, mov, outputTiming, out].filter(Boolean).join(' ');
+  const tail = [cudaHw, inputTiming, ss, `-i ${input}`, subtitleInput, mapVideo, mapAudio, codecs, audioTiming, mov, outputTiming, out].filter(Boolean).join(' ');
   const base = `ffmpeg -hide_banner -loglevel warning ${re} ${tail}`.replace(/\s+/g, ' ').trim();
   if (teePath) {
     const finalPath = String(teePath);
@@ -1142,6 +1510,7 @@ function liveFullTranscodeFeasible(analysis) {
 }
 
 function getLiveTranscodeVariantsForJob(job) {
+  if (job?.burnInSubtitleVttPath || job?.burnInSubtitleBitmapPath) return ['libx264'];
   if (!job || job.playbackMode !== 'full-transcode') return [undefined];
   const le = job.liveEncode;
   if (!le || le.encoder !== 'h264_nvenc') return ['libx264'];
@@ -1249,6 +1618,8 @@ async function pipeLiveFfmpegVariants(jobId, res, job, variants) {
       startSeconds: job.startSeconds || 0,
       teePath,
       fullTranscodeVariant: variants[i],
+      burnInSubtitleVttPath: job.burnInSubtitleVttPath || null,
+      burnInSubtitleBitmapPath: job.burnInSubtitleBitmapPath || null,
     });
 
     /* eslint-disable no-await-in-loop -- sequential encoder fallback */
@@ -1287,6 +1658,66 @@ function cancelLiveJob(jobId) {
 }
 
 const castSessions = createSessionStore();
+const CAST_CONFIG = loadCastConfig(CFG);
+
+async function availableFileRoots() {
+  try {
+    const checks = FILE_ROOTS.map((root) => (
+      `if test -d ${escCmd(root.serverPath)}; then printf '%s\\n' ${escCmd(root.id)}; fi`
+    )).join('; ');
+    const { stdout } = await sshExec(checks, 10000);
+    const availableIds = new Set(String(stdout || '').split('\n').map((id) => id.trim()).filter(Boolean));
+    const available = FILE_ROOTS.filter((root) => availableIds.has(root.id));
+    if (available.length) {
+      const hasLowercaseDownloads = available.some((root) => root.id === 'downloads');
+      return available.map((root) => {
+        if (!hasLowercaseDownloads && root.id === 'Downloads') {
+          return { ...root, id: 'downloads', label: 'Downloads', routePrefix: '/file-manager/user/o/downloads' };
+        }
+        return root;
+      });
+    }
+  } catch (_) { /* Config should remain usable while the SSH target is temporarily offline. */ }
+  const fallback = defaultFileRoot();
+  return fallback ? [fallback] : [];
+}
+
+app.get('/api/config', async (req, res) => {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  const roots = await availableFileRoots();
+  const configuredDefault = defaultFileRoot();
+  const defaultRoot = roots.find((root) => root.id === configuredDefault?.id) || roots[0] || configuredDefault;
+  const mediaRoot = defaultRoot?.serverPath || CFG.downloadDir;
+  res.json({
+    success: true,
+    mediaRoot,
+    fileManagerRoot: mediaRoot,
+    fileManagerRootLabel: defaultRoot?.label || CFG.fileManagerRootLabel,
+    fileRoots: roots,
+    defaultRootId: defaultRoot?.id || 'watch_list',
+    serverUrl: `${proto}://${host}`,
+    features: {
+      hls: !!CAST_CONFIG.enableHlsBackend,
+      vlc: !!CAST_CONFIG.enableVlcBackend,
+      castDoctor: true,
+      diagnostics: true,
+      cast: true,
+      torrents: true,
+      shares: true,
+      trash: true,
+      starred: true,
+      newFolder: true,
+    },
+  });
+});
+
+const castDiagnostics = createDiagnosticsStore({
+  diagnosticsDir: CAST_CONFIG.diagnosticsDir,
+  logger: (msg) => mediaLog(msg),
+});
+const castDeviceProfiles = createDeviceProfileStore(CAST_CONFIG.deviceProfilePath);
+app.use(castDiagnostics.middleware());
 const hlsJobs = createHlsJobManager({
   sshExec,
   sshConfig: getSshConfig(),
@@ -1317,6 +1748,140 @@ const castProviders = {
   airplay: airplayProvider,
 };
 
+function syncActiveCastSessionFromOrchestrator({ filePath, streamUrl, backend, jobId, prepared, subtitleUrl, seconds }) {
+  activeCastSession.filePath = filePath;
+  activeCastSession.resolvedPath = null;
+  activeCastSession.streamUrl = streamUrl;
+  activeCastSession.backend = backend;
+  activeCastSession.liveJobId = backend === 'ffmpeg-live' ? jobId : null;
+  activeCastSession.vlcJobId = backend === 'vlc' ? jobId : null;
+  activeCastSession.playbackMode = prepared?.playbackMode || null;
+  activeCastSession.analysisSummary = prepared?.analysis || null;
+  activeCastSession.subtitlePath = subtitleUrl || null;
+  activeCastSession.title = prepared?.title || path.basename(filePath);
+  activeCastSession.duration = prepared?.duration || 0;
+  activeCastSession.type = prepared?.mediaKind || 'video';
+  activeCastSession.startedAt = new Date().toISOString();
+  activeCastSession.startSeconds = seconds || 0;
+  activeCastSession.lastKnownTime = seconds || 0;
+  activeCastSession.lastCommandAt = Date.now();
+  activeCastSession.state = 'playing';
+}
+
+async function resolveBurnInSubtitle(filePath, sel = {}) {
+  let subtitleId = sel.id ? String(sel.id).trim() : '';
+  if (!subtitleId && sel.path) {
+    subtitleId = await registerCustomSubtitlePath(filePath, sel.path);
+  }
+  if (!subtitleId && (sel.mode === 'auto' || sel.mode === 'burn-in')) {
+    const items = await discoverSubtitlesForFile(filePath);
+    const first = (items || []).find((s) => s && s.id) || null;
+    if (first) subtitleId = first.id;
+  }
+  if (!subtitleId) return null;
+  pruneSubtitleIndex();
+  const indexed = subtitleIndex.get(subtitleId);
+  if (!indexed) throw makeFileManagerError('NOT_FOUND', 'Subtitle selection expired. Reopen the cast dialog and choose it again.');
+  if (indexed.filePath !== filePath) throw makeFileManagerError('INVALID_PATH', 'Subtitle does not belong to the selected video');
+  if (indexed.imageBased) {
+    return { path: indexed.sidecarPath, vttPath: null, imageBased: true };
+  }
+  const vttPath = await ensureSubtitleVttRemote({
+    filePath,
+    subtitleId,
+    kind: indexed.kind,
+    sidecarPath: indexed.sidecarPath,
+    streamIndex: indexed.streamIndex,
+    imageBased: indexed.imageBased,
+  });
+  return { path: vttPath, vttPath, imageBased: false };
+}
+
+async function resolveSubtitleForCast(req, filePath, selection) {
+  const sel = selection || { mode: 'off' };
+  if (sel.mode === 'off' || sel.mode === 'none') return { mode: 'off', url: null, burnIn: false };
+
+  if (sel.mode === 'burn-in' || sel.burnIn) {
+    const burnIn = await resolveBurnInSubtitle(filePath, sel);
+    if (!burnIn) throw makeFileManagerError('NOT_FOUND', 'No subtitle available for burn-in on this file');
+    return { mode: 'burn-in', url: null, burnIn: true, burnInPath: burnIn.path, burnInVttPath: burnIn.vttPath, imageBased: burnIn.imageBased };
+  }
+
+  if (sel.path) {
+    const customSubtitleId = await registerCustomSubtitlePath(filePath, sel.path);
+    const indexedSubtitle = subtitleIndex.get(customSubtitleId);
+    if (indexedSubtitle?.imageBased) {
+      return { mode: 'burn-in', id: customSubtitleId, url: null, burnIn: true, burnInPath: indexedSubtitle.sidecarPath, burnInVttPath: null, imageBased: true };
+    }
+    return { mode: 'path', id: customSubtitleId, url: buildSubtitleUrl(req, customSubtitleId), burnIn: false };
+  }
+
+  if (sel.id) {
+    pruneSubtitleIndex();
+    const indexedSubtitle = subtitleIndex.get(String(sel.id).trim());
+    if (!indexedSubtitle) throw makeFileManagerError('NOT_FOUND', 'Subtitle selection expired. Reopen the cast dialog and choose it again.');
+    if (indexedSubtitle.filePath !== filePath) throw makeFileManagerError('INVALID_PATH', 'Subtitle does not belong to the selected video');
+    if (indexedSubtitle.imageBased) {
+      return { mode: 'burn-in', id: sel.id, url: null, burnIn: true, burnInPath: indexedSubtitle.sidecarPath, burnInVttPath: null, imageBased: true };
+    }
+    return { mode: 'id', id: sel.id, url: buildSubtitleUrl(req, sel.id), burnIn: false };
+  }
+
+  if (sel.mode === 'auto') {
+    try {
+      const subData = await discoverSubtitlesForFile(filePath);
+      const first = (subData || []).find((s) => s && s.id) || null;
+      if (first?.burnInRequired) {
+        const indexedSubtitle = subtitleIndex.get(first.id);
+        return { mode: 'burn-in', id: first.id, url: null, burnIn: true, burnInPath: indexedSubtitle.sidecarPath, burnInVttPath: null, imageBased: true, label: first.label };
+      }
+      if (first) return { mode: 'auto', id: first.id, url: buildSubtitleUrl(req, first.id), burnIn: false, label: first.label };
+    } catch (_) {}
+    return { mode: 'off', url: null, burnIn: false };
+  }
+
+  return { mode: 'off', url: null, burnIn: false };
+}
+
+const castOrchestrator = createCastOrchestrator({
+  cfg: CFG,
+  castConfig: CAST_CONFIG,
+  diagnostics: castDiagnostics,
+  deviceProfiles: castDeviceProfiles,
+  castSessions,
+  getProvider,
+  prepareMediaForCast,
+  summarizePrepared,
+  cleanupPreparedMedia,
+  resolveSubtitleForCast,
+  sshExec,
+  getReceiverBaseUrl,
+  probeVlcAvailable,
+  createLiveCastJob,
+  hlsJobs,
+  generateStreamToken,
+  getMimeType,
+  createVlcJob: (input) => createVlcCastJob(input),
+  analyzeMediaCompatibility,
+  assertRemotePathInsideRoot,
+  ensureNotProtectedFile,
+  normalizeProviderName,
+  getSelectedDeviceForProvider,
+  stripProviderPrefix,
+  parseTimeToSeconds,
+  syncActiveCastSession: syncActiveCastSessionFromOrchestrator,
+  logger: mediaLog,
+});
+
+const castWatchdog = createCastWatchdog({
+  castSessions,
+  diagnostics: castDiagnostics,
+  providerGetter: getProvider,
+  logger: mediaLog,
+  intervalMs: CAST_CONFIG.watchdogIntervalMs,
+});
+castWatchdog.start();
+
 function normalizeProviderName(value) {
   const provider = String(value || '').toLowerCase();
   return provider === 'airplay' ? 'airplay' : 'chromecast';
@@ -1345,6 +1910,7 @@ async function cleanupPreparedMedia(prepared, reason = 'cleanup') {
   if (!prepared) return;
   if (prepared.backend === 'hls' && prepared.jobId) await hlsJobs.cancelJob(prepared.jobId, reason).catch(() => {});
   if (prepared.backend === 'vlc' && prepared.jobId) await cancelVlcCastJob(prepared.jobId, reason).catch(() => {});
+  if ((prepared.backend === 'ffmpeg-live' || prepared.backend === 'ffmpeg') && prepared.jobId) cancelLiveJob(prepared.jobId);
 }
 
 async function restartActiveCastAt(seconds) {
@@ -1460,11 +2026,74 @@ async function restartActiveCastAt(seconds) {
   });
 }
 
+async function restartProviderSessionAt(req, providerSession, provider, targetSeconds) {
+  const startSeconds = Math.max(0, Math.floor(Number(targetSeconds) || 0));
+  const backend = providerSession.backend;
+  const restartBackends = new Set(['hls', 'vlc', 'ffmpeg-live']);
+  if (!restartBackends.has(backend)) return null;
+
+  const modeMap = { hls: 'hls', vlc: 'vlc', 'ffmpeg-live': 'ffmpeg-live' };
+  const oldPrepared = providerSession.preparedMedia;
+  const prepared = await prepareMediaForCast({
+    req,
+    cfg: CFG,
+    filePath: providerSession.filePath,
+    target: providerSession.provider,
+    mode: modeMap[backend],
+    autoTranscode: 'auto',
+    startSeconds,
+    hlsJobs,
+    generateStreamToken,
+    getMimeType,
+    sshExec,
+    createVlcJob: (input) => createVlcCastJob(input),
+    createLiveFfmpegJob: createLiveCastJob,
+    logger: mediaLog,
+  });
+
+  await provider.play({
+    deviceId: providerSession.deviceId,
+    filePath: providerSession.filePath,
+    streamUrl: prepared.streamUrl,
+    title: prepared.title || providerSession.title,
+    mimeType: prepared.mimeType,
+    mediaKind: prepared.mediaKind || providerSession.mediaKind,
+    startSeconds,
+    preparedMedia: prepared,
+  });
+
+  await cleanupPreparedMedia(oldPrepared, 'seek-restart');
+  if (backend === 'ffmpeg-live' && providerSession.jobId) {
+    cancelLiveJob(providerSession.jobId);
+  }
+
+  castSessions.update({
+    preparedMedia: summarizePrepared(prepared),
+    streamUrl: prepared.streamUrl,
+    jobId: prepared.jobId,
+    pipelineMode: prepared.pipelineMode,
+    backend: prepared.backend,
+    startSeconds,
+    lastKnownTime: startSeconds,
+    state: 'playing',
+  });
+
+  syncActiveCastSessionFromOrchestrator({
+    filePath: providerSession.filePath,
+    streamUrl: prepared.streamUrl,
+    backend: prepared.backend,
+    jobId: prepared.jobId,
+    prepared,
+    subtitleUrl: null,
+    seconds: startSeconds,
+  });
+
+  return prepared;
+}
+
 // ─── LIVE CAST STREAM ENDPOINT ───────────────────────────────
 function setLiveCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Range');
+  applyCors(res);
 }
 
 app.options('/api/cast/live/:jobId', (req, res) => {
@@ -1708,9 +2337,11 @@ app.post('/api/torrents/resume-all', async (req, res) => {
 // ─── FILE BROWSER ENDPOINTS ─────────────────────────────────
 app.get('/api/files', async (req, res) => {
   try {
-    const requestedPath = req.query.path || CFG.fileManagerRoot;
+    const requestedPath = req.query.path || defaultFileRoot()?.serverPath;
     const sudoPwd = getSudoPassword(req);
     const dir = await assertRemotePathInsideRoot(requestedPath, { sudoPwd });
+    const fileRoot = fileRootForPath(dir);
+    if (!fileRoot) throw makeFileManagerError('INVALID_PATH', 'Folder is outside the configured file roots');
     const showHidden = String(req.query.showHidden || '').toLowerCase() === 'true' || req.query.showHidden === '1';
     const hiddenFilter = showHidden ? '' : " ! -name '.*'";
     const sudoPrefix = makeSudoPrefix(sudoPwd);
@@ -1786,19 +2417,22 @@ app.get('/api/files', async (req, res) => {
       return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
     });
 
-    const parent = safeParentPath(CFG.fileManagerRoot, dir);
+    const parent = safeParentPath(fileRoot.serverPath, dir);
     res.json({
       ok: true,
       success: true,
       files,
       currentPath: dir,
-      relativePath: toRelativePath(CFG.fileManagerRoot, dir),
+      relativePath: toRelativePath(fileRoot.serverPath, dir),
       parentPath: parent,
-      isRoot: dir === CFG.fileManagerRoot,
-      rootPath: CFG.fileManagerRoot,
-      rootLabel: CFG.fileManagerRootLabel,
+      isRoot: dir === fileRoot.serverPath,
+      rootPath: fileRoot.serverPath,
+      root: fileRoot.serverPath,
+      path: dir,
+      rootId: fileRoot.id,
+      rootLabel: fileRoot.label,
       showHidden,
-      breadcrumbs: buildBreadcrumbs(CFG.fileManagerRoot, dir, CFG.fileManagerRootLabel),
+      breadcrumbs: buildBreadcrumbs(fileRoot.serverPath, dir, fileRoot.label),
     });
   } catch (err) {
     fileManagerError(res, err, 'Could not list files');
@@ -1959,9 +2593,10 @@ app.post('/api/files/create', async (req, res) => {
   try {
     const sudoPwd = getSudoPassword(req);
     const sudoPrefix = makeSudoPrefix(sudoPwd);
-    const parentPath = await assertRemotePathInsideRoot(req.body.parentPath || CFG.fileManagerRoot, { sudoPwd });
+    const parentPath = await assertRemotePathInsideRoot(req.body.parentPath || defaultFileRoot()?.serverPath, { sudoPwd });
+    const root = fileRootForPath(parentPath);
     const name = validateItemName(req.body.name);
-    const newPath = joinChild(CFG.fileManagerRoot, parentPath, name);
+    const newPath = joinChild(root.serverPath, parentPath, name);
     ensureNotProtectedFile(newPath, 'created');
     await assertParentPathInsideRoot(newPath, { sudoPwd });
     const { code, stderr } = await sshExec(`if ${sudoPrefix}test -e ${escCmd(newPath)}; then exit 17; fi; ${sudoPrefix}touch ${escCmd(newPath)}`);
@@ -2016,7 +2651,7 @@ app.post('/api/files/rename', async (req, res) => {
     ensureNotProtectedFile(safeOldPath, 'renamed');
     const newName = validateItemName(req.body.newName);
     const dir = path.posix.dirname(safeOldPath);
-    const newPath = joinChild(CFG.fileManagerRoot, dir, newName);
+    const newPath = joinChild(fileRootForPath(safeOldPath).serverPath, dir, newName);
     ensureNotProtectedFile(newPath, 'renamed');
     const sudoPrefix = makeSudoPrefix(sudoPwd);
     const { code, stderr } = await sshExec(`if ${sudoPrefix}test -e ${escCmd(newPath)}; then exit 17; fi; ${sudoPrefix}mv ${escCmd(safeOldPath)} ${escCmd(newPath)}`);
@@ -2034,7 +2669,7 @@ app.post('/api/files/copy', async (req, res) => {
     ensureNotProtectedFile(safePath, 'copied');
     const destName = validateItemName(req.body.destName);
     const dir = path.posix.dirname(safePath);
-    const newPath = joinChild(CFG.fileManagerRoot, dir, destName);
+    const newPath = joinChild(fileRootForPath(safePath).serverPath, dir, destName);
     ensureNotProtectedFile(newPath, 'copied');
     const sudoPrefix = makeSudoPrefix(sudoPwd);
     const { code, stderr } = await sshExec(`if ${sudoPrefix}test -e ${escCmd(newPath)}; then exit 17; fi; ${sudoPrefix}cp -r ${escCmd(safePath)} ${escCmd(newPath)}`, 120000);
@@ -2047,9 +2682,10 @@ app.post('/api/files/copy', async (req, res) => {
 app.post('/api/files/mkdir', async (req, res) => {
   try {
     const { sudoPwd } = req.body;
-    const parentPath = await assertRemotePathInsideRoot(req.body.parentPath || CFG.fileManagerRoot, { sudoPwd });
+    const parentPath = await assertRemotePathInsideRoot(req.body.parentPath || defaultFileRoot()?.serverPath, { sudoPwd });
+    const root = fileRootForPath(parentPath);
     const name = validateItemName(req.body.name);
-    const newDir = joinChild(CFG.fileManagerRoot, parentPath, name);
+    const newDir = joinChild(root.serverPath, parentPath, name);
     ensureNotProtectedFile(newDir, 'created');
     const sudoPrefix = makeSudoPrefix(sudoPwd);
     const { code, stderr } = await sshExec(`if ${sudoPrefix}test -e ${escCmd(newDir)}; then exit 17; fi; ${sudoPrefix}mkdir ${escCmd(newDir)}`);
@@ -2063,12 +2699,13 @@ app.post('/api/files/move', async (req, res) => {
   try {
     const { sourcePath, destDir, sudoPwd } = req.body;
     const safeSourcePath = await assertRemotePathInsideRoot(sourcePath, { sudoPwd });
-    const safeDestDir = await assertRemotePathInsideRoot(destDir || CFG.fileManagerRoot, { sudoPwd });
+    const safeDestDir = await assertRemotePathInsideRoot(destDir || defaultFileRoot()?.serverPath, { sudoPwd });
     if (isRootPath(safeSourcePath)) throw makeFileManagerError('INVALID_PATH', 'The file-manager root cannot be moved');
     ensureNotCriticalSystemPath(safeSourcePath, 'moved');
     ensureNotProtectedFile(safeSourcePath, 'moved');
     const fileName = path.basename(safeSourcePath);
-    const destPath = joinChild(CFG.fileManagerRoot, safeDestDir, fileName);
+    const destRoot = fileRootForPath(safeDestDir);
+    const destPath = joinChild(destRoot.serverPath, safeDestDir, fileName);
     if (safeDestDir === safeSourcePath || safeDestDir.startsWith(`${safeSourcePath}/`)) {
       throw makeFileManagerError('INVALID_PATH', 'A folder cannot be moved into itself or its children');
     }
@@ -2161,7 +2798,13 @@ app.get('/api/files/stream', async (req, res) => {
                 if (range) {
                   const parts = range.replace(/bytes=/, '').split('-');
                   const start = parseInt(parts[0], 10);
-                  const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, cacheSize - 1);
+                  let end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, cacheSize - 1);
+                  end = Math.min(end, cacheSize - 1);
+                  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= cacheSize) {
+                    conn.end();
+                    res.writeHead(416, { 'Content-Range': `bytes */${cacheSize}` });
+                    return res.end();
+                  }
                   res.writeHead(206, {
                     'Content-Range': `bytes ${start}-${end}/${cacheSize}`,
                     'Accept-Ranges': 'bytes',
@@ -2255,7 +2898,13 @@ app.get('/api/files/stream', async (req, res) => {
         if (range) {
           const parts = range.replace(/bytes=/, '').split('-');
           const start = parseInt(parts[0], 10);
-          const end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, fileSize - 1);
+          let end = parts[1] ? parseInt(parts[1], 10) : Math.min(start + 10 * 1024 * 1024 - 1, fileSize - 1);
+          end = Math.min(end, fileSize - 1);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= fileSize) {
+            conn.end();
+            res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+            return res.end();
+          }
           const chunkSize = end - start + 1;
 
           res.writeHead(206, {
@@ -2315,7 +2964,7 @@ app.post('/api/thumbnail', async (req, res) => {
     // Check if already exists
     const { code: existsCode } = await sshExec(`test -f "${thumbPath}" && echo exists`);
     if (existsCode === 0) {
-      return res.json({ thumbnail: `/api/thumbnail/serve/${thumbName}` });
+      return res.json({ thumbnail: `/api/thumbnail/serve/${thumbName}`, status: 'generated' });
     }
 
     if (type === 'video') {
@@ -2339,12 +2988,13 @@ app.post('/api/thumbnail', async (req, res) => {
     // Check if generation succeeded
     const { stdout: check } = await sshExec(`test -f "${thumbPath}" && echo ok`);
     if (check.includes('ok')) {
-      res.json({ thumbnail: `/api/thumbnail/serve/${thumbName}` });
+      res.json({ thumbnail: `/api/thumbnail/serve/${thumbName}`, status: 'generated' });
     } else {
-      res.json({ thumbnail: null });
+      const reason = type === 'video' ? 'ffmpeg_extract_failed' : 'unsupported_type';
+      res.json({ thumbnail: null, status: 'unavailable', reason });
     }
   } catch (err) {
-    res.json({ thumbnail: null });
+    res.json({ thumbnail: null, status: 'failed', reason: err.message || 'thumbnail_error' });
   }
 });
 
@@ -2394,6 +3044,9 @@ async function resolveSubtitleUrlForStart(req, filePath) {
   const customPath = customSubtitlePath || subtitlePath;
   if (customPath) {
     const customSubtitleId = await registerCustomSubtitlePath(filePath, customPath);
+    if (subtitleIndex.get(customSubtitleId)?.imageBased) {
+      throw makeFileManagerError('UNSUPPORTED_FILE', 'VobSub IDX/SUB subtitles require the main Cast panel with Auto or FFmpeg Live burn-in');
+    }
     return buildSubtitleUrl(req, customSubtitleId);
   }
   if (subtitleId) {
@@ -2401,12 +3054,17 @@ async function resolveSubtitleUrlForStart(req, filePath) {
     const indexedSubtitle = subtitleIndex.get(String(subtitleId || '').trim());
     if (!indexedSubtitle) throw makeFileManagerError('NOT_FOUND', 'Subtitle selection expired. Reopen the cast dialog and choose it again.');
     if (indexedSubtitle.filePath !== filePath) throw makeFileManagerError('INVALID_PATH', 'Subtitle does not belong to the selected video');
+    if (indexedSubtitle.imageBased) throw makeFileManagerError('UNSUPPORTED_FILE', 'VobSub IDX/SUB subtitles require Auto or FFmpeg Live burn-in');
     return buildSubtitleUrl(req, subtitleId);
   }
   return null;
 }
 
 async function startProviderCast(req, res) {
+  return castOrchestrator.startCast(req, res);
+}
+
+async function startProviderCastLegacy(req, res) {
   let prepared = null;
   try {
     let { filePath, seekTo } = req.body || {};
@@ -2554,6 +3212,183 @@ app.post('/api/cast/airplay/pair/finish', async (req, res) => {
 });
 
 app.post('/api/cast/start', startProviderCast);
+
+app.post('/api/cast/preflight', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const providerName = normalizeProviderName(body.provider || 'chromecast');
+    const selected = body.deviceId
+      ? { device_id: body.deviceId, name: body.deviceName || '' }
+      : await getSelectedDeviceForProvider(providerName);
+    if (!selected?.device_id) {
+      return res.status(409).json(buildPreflightResponse({
+        ok: false,
+        blocking: true,
+        blockingFailures: [{ name: 'receiver_reachable', stage: 'receiver', label: 'Receiver selected', detail: 'No device selected', suggestion: 'Scan and select a Chromecast device first' }],
+        warnings: [],
+        message: 'No Chromecast device selected',
+        suggestedFix: 'Scan and select a Chromecast device first',
+        details: { check: 'receiver_reachable' },
+        checks: [],
+        failedChecks: [],
+      }));
+    }
+
+    let filePath = body.filePath;
+    let streamUrl = body.streamUrl || null;
+    let backend = String(body.backend || body.mode || CAST_CONFIG.backendDefault || 'auto').toLowerCase();
+    let subtitleUrl = null;
+
+    if (filePath) {
+      filePath = await assertRemotePathInsideRoot(filePath);
+      const subtitleSelection = await resolveSubtitleForCast(req, filePath, normalizeSubtitleInput(body));
+      subtitleUrl = subtitleSelection.url;
+      if (subtitleSelection.burnIn) {
+        if (!['auto', 'ffmpeg-live', 'ffmpeg', 'live'].includes(backend)) {
+          const err = new Error('Burn-in subtitles require FFmpeg Live. Select FFmpeg Live or use Auto.');
+          err.status = 400;
+          throw err;
+        }
+        backend = 'ffmpeg-live';
+      }
+      if (!streamUrl) {
+        const analysis = await analyzeMediaCompatibility(filePath, providerName, { autoTranscode: String(body.autoTranscode || 'auto').toLowerCase() }, { sshExec });
+        const prepared = await prepareMediaForCast({
+          req,
+          cfg: CFG,
+          filePath,
+          target: providerName,
+          mode: backend,
+          autoTranscode: String(body.autoTranscode || 'auto').toLowerCase(),
+          startSeconds: body.seekTo ? parseTimeToSeconds(String(body.seekTo)) : 0,
+          hlsJobs,
+          generateStreamToken,
+          getMimeType,
+          sshExec,
+          createVlcJob: (input) => createVlcCastJob(input),
+          createLiveFfmpegJob: (input) => createLiveCastJob({
+            ...input,
+            burnInSubtitlePath: subtitleSelection.burnInPath || null,
+            burnInSubtitleVttPath: subtitleSelection.burnInVttPath || null,
+          }),
+          logger: mediaLog,
+        });
+        streamUrl = prepared.streamUrl;
+        backend = prepared.backend || backend;
+        await cleanupPreparedMedia(prepared, 'preflight-probe');
+      }
+    }
+
+    const preflight = await runPreflight({
+      req,
+      cfg: CFG,
+      castConfig: CAST_CONFIG,
+      sshExec,
+      getReceiverBaseUrl,
+      streamUrl,
+      subtitleUrl,
+      backend,
+      deviceName: selected.name || stripProviderPrefix(providerName, selected.device_id),
+      diagnostics: castDiagnostics,
+    });
+
+    const response = buildPreflightResponse(preflight, {
+      deviceId: selected.device_id,
+      deviceName: selected.name,
+      streamUrl: streamUrl ? String(streamUrl).replace(/\/stream\/[^/]+/, '/stream/***') : null,
+      backend,
+    });
+    return res.status(response.blocking ? 409 : 200).json(response);
+  } catch (err) {
+    return res.status(err.status || 500).json({
+      success: false,
+      stage: 'media',
+      blocking: true,
+      message: err.message,
+      details: { error: err.message },
+      suggestedFix: 'Check file path and server logs',
+    });
+  }
+});
+
+app.get('/api/cast/diagnostics', (req, res) => {
+  res.json({ success: true, ...castDiagnostics.getAllDiagnostics(), config: CAST_CONFIG });
+});
+
+app.get('/api/cast/diagnostics/:sessionId', (req, res) => {
+  const summary = castDiagnostics.summarizeSession(req.params.sessionId);
+  if (!summary?.session) return res.status(404).json({ success: false, error: 'Unknown cast session' });
+  res.json({ success: true, ...summary, deviceProfile: castDeviceProfiles.get(summary.session.deviceName) });
+});
+
+app.post('/api/cast/diagnostics/reset', (req, res) => {
+  castDiagnostics.reset();
+  res.json({ success: true });
+});
+
+app.get('/api/cast/doctor', async (req, res) => {
+  try {
+    const selected = getSelectedCastDevice('chromecast', { includeCredentials: false });
+    const report = await runCastDoctor({
+      req,
+      cfg: CFG,
+      castConfig: CAST_CONFIG,
+      sshExec,
+      getReceiverBaseUrl,
+      probeVlcAvailable,
+      diagnostics: castDiagnostics,
+      deviceName: selected?.name || CFG.chromecastName,
+    });
+    res.json({ success: report.ok, report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/cast/doctor/run', async (req, res) => {
+  try {
+    const selected = getSelectedCastDevice('chromecast', { includeCredentials: false });
+    const report = await runCastDoctor({
+      req,
+      cfg: CFG,
+      castConfig: CAST_CONFIG,
+      sshExec,
+      getReceiverBaseUrl,
+      probeVlcAvailable,
+      diagnostics: castDiagnostics,
+      deviceName: selected?.name || CFG.chromecastName,
+    });
+    res.json({ success: report.ok, report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/cast/doctor/latest', (req, res) => {
+  const latest = castDiagnostics.getAllDiagnostics().latestDoctor;
+  if (!latest) return res.status(404).json({ success: false, error: 'No doctor report yet. POST /api/cast/doctor/run first.' });
+  res.json({ success: true, report: latest });
+});
+
+app.get('/api/cast/doctor/bundle', async (req, res) => {
+  try {
+    const sessionId = req.query.sessionId || castDiagnostics.activeSessionId || 'doctor';
+    const outDir = path.join(CAST_CONFIG.diagnosticsDir, 'bundles');
+    const bundlePath = await createDebugBundle({
+      diagnosticsDir: CAST_CONFIG.diagnosticsDir,
+      outDir,
+      sessionId,
+      extras: {
+        diagnostics: castDiagnostics.getAllDiagnostics(),
+        doctor: castDiagnostics.getAllDiagnostics().latestDoctor,
+        summaryMarkdown: '# Cast Manager Debug Bundle\n\nGenerated for troubleshooting Chromecast/Android TV casting.\n',
+      },
+    });
+    res.download(bundlePath);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 async function getReceiverStatus() {
   const backend = process.env.AIRPLAY_RECEIVER_BACKEND || 'uxplay';
@@ -2710,10 +3545,13 @@ function estimateSessionTime(session, state = session?.state) {
 
 app.get('/api/cast/status', async (req, res) => {
   const session = castSessions.get();
-  if (!session) return res.json(await getNormalizedCastStatus());
+  if (!session) {
+    const status = await getNormalizedCastStatus();
+    return res.json({ success: status.success !== false, ...status });
+  }
   const provider = getProvider(session.provider);
   const receiver = await provider.status(session.deviceId);
-  const state = receiver.state && receiver.state !== 'unknown' ? receiver.state : session.state;
+  let state = receiver.state && receiver.state !== 'unknown' ? receiver.state : session.state;
   const appClock = usesAppClockForSession(session);
   const appCurrentTime = estimateSessionTime(session, state);
   const receiverDuration = Number(receiver.duration || 0);
@@ -2722,7 +3560,7 @@ app.get('/api/cast/status', async (req, res) => {
     && receiverDuration < 12 * 60 * 60
     && (!sessionDuration || receiverDuration <= sessionDuration * 1.5);
   const receiverTime = Number(receiver.currentTime || 0);
-  const usableReceiverTime = Number.isFinite(receiverTime) && receiverTime >= 0
+  const usableReceiverTime = Number.isFinite(receiverTime) && receiverTime > 0
     && !appClock
     && (!sessionDuration || receiverTime <= sessionDuration + 30);
   if (receiver.success !== false && receiver.receiverReachable !== false) {
@@ -2737,6 +3575,18 @@ app.get('/api/cast/status', async (req, res) => {
   const currentTime = appClock
     ? estimateSessionTime(updated, updated.state || state)
     : (usableReceiverTime ? receiverTime : Number(updated.lastKnownTime || 0));
+  const lastCommandAt = Number(activeCastSession.lastCommandAt || updated.lastKnownAt || 0);
+  const recentCommand = Date.now() - lastCommandAt < 8000;
+  let normalizedState = normalizeCastState(updated.state || state);
+  let restarting = false;
+  let starting = false;
+  if (normalizedState === 'idle' && recentCommand) {
+    restarting = true;
+    normalizedState = 'buffering';
+  } else if (normalizedState === 'unknown' && recentCommand) {
+    starting = true;
+    normalizedState = 'buffering';
+  }
   res.json({
     success: receiver.success !== false,
     provider: session.provider,
@@ -2745,11 +3595,17 @@ app.get('/api/cast/status', async (req, res) => {
     activeSession: true,
     fallbackAvailable: true,
     receiverReachable: receiver.receiverReachable !== false,
-    state: updated.state || state,
+    state: normalizedState,
     currentTime,
     duration: usableReceiverDuration ? receiverDuration : Number(updated.duration || 0),
     title: receiver.title || updated.title,
     volumeLevel: receiver.volumeLevel ?? 100,
+    backend: updated.backend || session.backend,
+    lastCommandAt,
+    lastKnownTime: Number(updated.lastKnownTime || 0),
+    seekInProgress: restarting && (Date.now() - lastCommandAt < 4000),
+    starting,
+    restarting,
     session: updated,
     receiverError: receiver.error,
   });
@@ -3098,6 +3954,9 @@ app.post('/api/cast/controls', async (req, res) => {
     if (providerSession) {
       const provider = getProvider(providerSession.provider);
       if (action === 'stop') {
+        if (providerSession.jobId && providerSession.backend === 'ffmpeg-live') {
+          cancelLiveJob(providerSession.jobId);
+        }
         await provider.stop(providerSession.deviceId).catch((err) => mediaLog(`provider stop failed: ${err.message}`));
         await cleanupPreparedMedia(providerSession.preparedMedia, 'stopped');
         castSessions.clear();
@@ -3108,70 +3967,62 @@ app.post('/api/cast/controls', async (req, res) => {
         const result = await provider.pause(providerSession.deviceId);
         castSessions.update({ state: 'paused' });
         activeCastSession.state = 'paused';
+        activeCastSession.lastCommandAt = Date.now();
         return res.json({ success: true, state: 'paused', provider: providerSession.provider, receiver: result });
       }
       if (action === 'play' || action === 'resume') {
+        activeCastSession.lastCommandAt = Date.now();
+        const status = await provider.status(providerSession.deviceId).catch(() => ({ state: 'unknown' }));
+        const st = normalizeCastState(status.state);
+        if (st === 'idle' && providerSession.filePath) {
+          const resumeAt = Math.max(0, Math.floor(providerSession.lastKnownTime ?? providerSession.startSeconds ?? 0));
+          const restarted = await restartProviderSessionAt(req, providerSession, provider, resumeAt);
+          if (restarted) {
+            return res.json({ success: true, state: 'playing', currentTime: resumeAt, fallbackUsed: true, provider: providerSession.provider });
+          }
+          await restartActiveCastAt(resumeAt);
+          return res.json({ success: true, state: 'playing', currentTime: resumeAt, fallbackUsed: true, provider: providerSession.provider });
+        }
         const result = await provider.resume(providerSession.deviceId);
         castSessions.update({ state: 'playing' });
         activeCastSession.state = 'playing';
         return res.json({ success: true, state: 'playing', provider: providerSession.provider, receiver: result });
       }
       if (action === 'seek') {
+        activeCastSession.lastCommandAt = Date.now();
         const targetSeconds = normalizeSeekTarget(value);
-        if (targetSeconds === null) return res.status(400).json({ error: 'invalid seek seconds' });
+        if (targetSeconds === null) return res.status(400).json({ success: false, error: 'invalid seek seconds' });
         let fallbackUsed = false;
-        if (providerSession.backend === 'hls' || providerSession.backend === 'vlc') {
-          const oldPrepared = providerSession.preparedMedia;
-          const prepared = await prepareMediaForCast({
-            req,
-            cfg: CFG,
-            filePath: providerSession.filePath,
-            target: providerSession.provider,
-            mode: providerSession.backend === 'vlc' ? 'vlc' : 'hls',
-            autoTranscode: 'auto',
-            startSeconds: targetSeconds,
-            hlsJobs,
-            generateStreamToken,
-            getMimeType,
-            sshExec,
-            createVlcJob: (input) => createVlcCastJob(input),
-            logger: mediaLog,
-          });
-          await provider.play({
-            deviceId: providerSession.deviceId,
-            filePath: providerSession.filePath,
-            streamUrl: prepared.streamUrl,
-            title: prepared.title,
-            mimeType: prepared.mimeType,
-            mediaKind: prepared.mediaKind,
-            startSeconds: targetSeconds,
-            preparedMedia: prepared,
-          });
-          await cleanupPreparedMedia(oldPrepared, 'seek-restart');
-          castSessions.update({
-            preparedMedia: summarizePrepared(prepared),
-            streamUrl: prepared.streamUrl,
-            jobId: prepared.jobId,
-            pipelineMode: prepared.pipelineMode,
-            backend: prepared.backend,
-            startSeconds: targetSeconds,
-            lastKnownTime: targetSeconds,
-            state: 'playing',
-          });
-          activeCastSession.streamUrl = prepared.streamUrl;
-          activeCastSession.backend = prepared.backend;
-          activeCastSession.vlcJobId = prepared.backend === 'vlc' ? prepared.jobId : null;
-          activeCastSession.lastKnownTime = targetSeconds;
-          activeCastSession.startSeconds = targetSeconds;
-          activeCastSession.state = 'playing';
+        let verified = false;
+
+        if (['hls', 'vlc', 'ffmpeg-live'].includes(providerSession.backend)) {
+          await restartProviderSessionAt(req, providerSession, provider, targetSeconds);
           fallbackUsed = true;
+          verified = true;
         } else {
           await provider.seek(providerSession.deviceId, targetSeconds);
+          const receiverStatus = await provider.status(providerSession.deviceId).catch(() => null);
+          verified = receiverStatus && !shouldFallbackAfterSeek(receiverStatus, targetSeconds);
+          if (!verified) {
+            const restarted = await restartProviderSessionAt(req, providerSession, provider, targetSeconds);
+            if (!restarted) {
+              await restartActiveCastAt(targetSeconds);
+            }
+            fallbackUsed = true;
+            verified = true;
+          }
           castSessions.update({ lastKnownTime: targetSeconds, state: 'playing' });
           activeCastSession.lastKnownTime = targetSeconds;
           activeCastSession.state = 'playing';
         }
-        return res.json({ success: true, state: 'playing', currentTime: targetSeconds, fallbackUsed, provider: providerSession.provider });
+        return res.json({
+          success: true,
+          state: 'playing',
+          currentTime: targetSeconds,
+          fallbackUsed,
+          verified,
+          provider: providerSession.provider,
+        });
       }
       if (action === 'volume') {
         const result = await provider.volume(providerSession.deviceId, value);
@@ -3344,6 +4195,35 @@ app.post('/api/stream', async (req, res) => {
   }
 });
 
+app.post('/api/url/analyze', async (req, res) => {
+  try {
+    const raw = String(req.body?.url || '').trim();
+    if (!raw) return res.status(400).json({ error: 'url is required' });
+    let parsed;
+    try { parsed = new URL(raw); }
+    catch (_) { return res.status(400).json({ error: 'Enter a complete http:// or https:// URL' }); }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return res.status(400).json({ error: 'Only normal HTTP and HTTPS media URLs are supported' });
+    }
+
+    const pathname = parsed.pathname.toLowerCase();
+    const directExtensions = ['.mp4', '.m4v', '.mov', '.webm', '.mp3', '.m4a', '.aac', '.ogg', '.wav', '.flac', '.jpg', '.jpeg', '.png', '.webp'];
+    const knownSites = ['youtube.com', 'youtu.be', 'twitch.tv', 'vimeo.com', 'dailymotion.com'];
+    const direct = directExtensions.some((ext) => pathname.endsWith(ext));
+    const hls = pathname.endsWith('.m3u8');
+    const knownSite = knownSites.some((host) => parsed.hostname === host || parsed.hostname.endsWith(`.${host}`));
+    const embedLike = /(^|\/)embed(\/|$)/i.test(parsed.pathname) || parsed.searchParams.has('embed');
+
+    if (direct) return res.json({ kind: 'direct-media', supported: true, castMethod: 'direct', message: 'Direct media URL detected. Ready to cast.' });
+    if (hls) return res.json({ kind: 'hls', supported: true, castMethod: 'direct', message: 'HLS playlist detected. Device compatibility depends on the stream codecs.' });
+    if (knownSite) return res.json({ kind: 'known-site', supported: true, castMethod: 'site', message: 'Known site URL detected. Cast Manager will ask its normal site resolver to play it.' });
+    if (embedLike) return res.json({ kind: 'html-embed', supported: false, castMethod: null, message: 'This is an HTML embed page, not a direct media stream. Cast Manager will not bypass logins, DRM, cookies, captchas, or anti-bot protections. Use a normal media or HLS URL when the provider exposes one.' });
+    return res.json({ kind: 'web-page', supported: false, castMethod: null, message: 'This URL looks like a web page rather than a playable media stream. Paste a direct media, HLS, or supported site URL.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── AUDIO METADATA ─────────────────────────────────────────
 app.post('/api/audio/metadata', async (req, res) => {
   try {
@@ -3363,43 +4243,7 @@ app.post('/api/subtitles', async (req, res) => {
   try {
     const filePath = await assertRemotePathInsideRoot(req.body.filePath);
     ensureNotProtectedFile(filePath, 'read');
-    const dir = path.dirname(filePath);
-    const base = path.basename(filePath, path.extname(filePath));
-    const { stdout: sidecarsOut } = await sshExec(
-      `find ${escCmd(dir)} -maxdepth 1 -name ${escCmd(`${base}*`)} \\( -name "*.srt" -o -name "*.ass" -o -name "*.vtt" -o -name "*.sub" \\) 2>/dev/null`
-    );
-    const sidecars = String(sidecarsOut || '').split('\n').map(s => s.trim()).filter(Boolean);
-
-    // Embedded subtitle streams.
-    const analysis = await analyzeMediaCompatibility(filePath, 'chromecast', { autoTranscode: 'auto' }, { sshExec });
-    const embedded = (analysis.subtitleStreams || []).map((s) => ({
-      index: s.index,
-      codec: s.codec,
-      language: s.language,
-    }));
-
-    pruneSubtitleIndex();
-    const now = Date.now();
-
-    const items = [];
-    for (const p of sidecars) {
-      const id = stableHash(JSON.stringify({ v: 1, kind: 'sidecar', filePath, sidecarPath: p }));
-      const label = `Sidecar: ${path.basename(p)}`;
-      subtitleIndex.set(id, { filePath, kind: 'sidecar', sidecarPath: p, label, createdAt: now });
-      items.push({ id, kind: 'sidecar', label, sourcePath: p });
-    }
-    for (const s of embedded) {
-      const id = stableHash(JSON.stringify({ v: 1, kind: 'embedded', filePath, streamIndex: s.index }));
-      const parts = [];
-      if (s.language) parts.push(String(s.language).toUpperCase());
-      if (s.codec) parts.push(String(s.codec));
-      const meta = parts.length ? ` (${parts.join(', ')})` : '';
-      const label = `Embedded: stream ${s.index}${meta}`;
-      subtitleIndex.set(id, { filePath, kind: 'embedded', streamIndex: s.index, label, createdAt: now });
-      items.push({ id, kind: 'embedded', label, streamIndex: s.index });
-    }
-
-    res.json({ subtitles: items });
+    res.json({ subtitles: await discoverSubtitlesForFile(filePath) });
   } catch (err) {
     res.json({ subtitles: [] });
   }
@@ -3419,6 +4263,7 @@ app.get('/api/subtitles/:id.vtt', async (req, res) => {
       kind: item.kind,
       sidecarPath: item.sidecarPath,
       streamIndex: item.streamIndex,
+      imageBased: item.imageBased,
     });
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
@@ -3449,8 +4294,9 @@ app.post('/api/subtitles/prepare', async (req, res) => {
     const safeFilePath = await assertRemotePathInsideRoot(filePath);
     ensureNotProtectedFile(safeFilePath, 'read');
     const subtitleId = await registerCustomSubtitlePath(safeFilePath, subtitlePath);
-    const subtitleUrl = buildSubtitleUrl(req, subtitleId);
-    res.json({ success: true, subtitleId, subtitleUrl });
+    const indexed = subtitleIndex.get(subtitleId);
+    const subtitleUrl = indexed?.imageBased ? null : buildSubtitleUrl(req, subtitleId);
+    res.json({ success: true, subtitleId, subtitleUrl, burnInRequired: !!indexed?.imageBased, format: indexed?.imageBased ? 'vobsub' : path.extname(indexed?.sidecarPath || '').slice(1) });
   } catch (err) {
     fileManagerError(res, err, 'Could not prepare subtitle');
   }
@@ -3465,12 +4311,14 @@ app.post('/api/cast/subtitles', async (req, res) => {
     let resolvedSubtitle = '';
     if (subtitlePath) {
       const customSubtitleId = await registerCustomSubtitlePath(safeFilePath, subtitlePath);
+      if (subtitleIndex.get(customSubtitleId)?.imageBased) throw makeFileManagerError('UNSUPPORTED_FILE', 'VobSub IDX/SUB subtitles require the main Cast panel with Auto or FFmpeg Live burn-in');
       resolvedSubtitle = buildSubtitleUrl(req, customSubtitleId);
     } else if (subtitleId) {
       pruneSubtitleIndex();
       const indexedSubtitle = subtitleIndex.get(String(subtitleId || '').trim());
       if (!indexedSubtitle) throw makeFileManagerError('NOT_FOUND', 'Subtitle selection expired. Reopen the cast dialog and choose it again.');
       if (indexedSubtitle.filePath !== safeFilePath) throw makeFileManagerError('INVALID_PATH', 'Subtitle does not belong to the selected video');
+      if (indexedSubtitle.imageBased) throw makeFileManagerError('UNSUPPORTED_FILE', 'VobSub IDX/SUB subtitles require the main Cast panel with Auto or FFmpeg Live burn-in');
       resolvedSubtitle = buildSubtitleUrl(req, subtitleId);
     }
     if (!resolvedSubtitle) throw makeFileManagerError('INVALID_PATH', 'Subtitle selection is required');
@@ -3721,6 +4569,31 @@ app.get('/api/files/recent', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/files/recent', async (req, res) => {
+  try {
+    const rawPath = req.body?.path || req.body?.filePath;
+    if (!rawPath) return res.status(400).json({ error: 'path or filePath required' });
+    const filePath = await assertRemotePathInsideRoot(rawPath);
+    ensureNotProtectedFile(filePath, 'tracked');
+    const action = String(req.body?.action || 'open');
+    const filename = path.basename(filePath);
+    let fileType = req.body?.type || null;
+    if (!fileType) {
+      try {
+        const stat = await getRemoteStat(filePath);
+        fileType = inferKindFromPath(filePath, stat.isDirectory);
+      } catch (_) {
+        fileType = inferKindFromPath(filePath, false);
+      }
+    }
+    trackRecent(filePath, action, filename, fileType);
+    logActivity('recent', filePath, { action, type: fileType });
+    res.json({ success: true, path: filePath, filename, action, type: fileType });
+  } catch (err) {
+    fileManagerError(res, err, 'Could not track recent file');
+  }
+});
+
 // ─── TRASH ENDPOINTS ────────────────────────────────────────
 app.get('/api/files/trash', (req, res) => {
   try {
@@ -3829,7 +4702,7 @@ app.get('/s/:shareId', async (req, res) => {
         <body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;background:#0d1117;color:#e6edf3">
         <div style="text-align:center"><h1>Link Not Found</h1><p>This share link has expired or been revoked.</p></div></body></html>`);
     }
-    if (!isPathSafe(share.file_path) || isProtectedPath(CFG.fileManagerRoot, share.file_path)) {
+    if (!isPathSafe(share.file_path) || isFilePathProtected(share.file_path)) {
       return res.status(403).send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Forbidden</title></head>
         <body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;background:#0d1117;color:#e6edf3">
         <div style="text-align:center"><h1>Link Unavailable</h1><p>This file is not available through Cast Manager.</p></div></body></html>`);
@@ -3937,23 +4810,34 @@ app.get('/api/files/tags', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+function sanitizeSearchQuery(query) {
+  const cleaned = String(query || '').replace(/[\0]/g, '').trim();
+  if (!cleaned) return '';
+  return cleaned.replace(/[^\w.\- ]+/g, ' ').trim();
+}
+
 // ─── SEARCH ENDPOINT ────────────────────────────────────────
 app.get('/api/search', async (req, res) => {
   try {
-    const { q, type, page } = req.query;
+    const { type, page } = req.query;
+    const q = sanitizeSearchQuery(req.query.q);
     const showHidden = String(req.query.showHidden || '').toLowerCase() === 'true' || req.query.showHidden === '1';
-    if (!q || !q.trim()) return res.json({ results: [] });
+    if (!q) return res.json({ results: [] });
     // First try the indexed search
-    let results = showHidden ? [] : searchFiles(q.trim()).filter((r) => {
+    let results = showHidden ? [] : searchFiles(q).filter((r) => {
       const p = r.path || '';
-      return isPathSafe(p) && !isProtectedPath(CFG.fileManagerRoot, p) && !hasHiddenSegment(CFG.fileManagerRoot, p);
+      return isPathSafe(p) && !isFilePathProtected(p) && !isFilePathHidden(p);
     });
     // If no indexed results, do a live filesystem search
     if (results.length === 0) {
-      const safeQuery = String(q).replace(/[\0]/g, '').slice(0, 120);
+      const safeQuery = q.slice(0, 120);
       const hiddenFilter = showHidden ? '' : " -not -name '.*'";
+      const searchRoots = FILE_ROOTS.map((root) => root.serverPath);
+      const findCommands = searchRoots.map((searchRoot) => (
+        `find ${escCmd(searchRoot)} -xdev -iname ${escCmd(`*${safeQuery}*`)}${hiddenFilter} -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null`
+      )).join('; ');
       const { stdout } = await sshExec(
-        `timeout 8s find ${escCmd(CFG.fileManagerRoot)} -xdev -iname ${escCmd(`*${safeQuery}*`)}${hiddenFilter} -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null | head -50`,
+        `timeout 8s bash -lc ${escCmd(`{ ${findCommands}; } | head -50`)}`,
         15000
       );
       results = stdout.split('\n').filter(l => l.trim()).map((line) => {
@@ -3966,9 +4850,9 @@ app.get('/api/search', async (req, res) => {
           size: parseInt(size, 10) || 0,
           mtime: parseFloat(mtime) || 0,
           is_directory: kind === 'd' ? 1 : 0,
-          protected: isProtectedPath(CFG.fileManagerRoot, p),
+          protected: isFilePathProtected(p),
         };
-      }).filter((r) => isPathSafe(r.path) && !isProtectedPath(CFG.fileManagerRoot, r.path));
+      }).filter((r) => isPathSafe(r.path) && !isFilePathProtected(r.path));
     }
     // Filter by type if specified
     if (type && type !== 'all') {
@@ -3992,8 +4876,10 @@ app.get('/api/search', async (req, res) => {
 app.post('/api/search/reindex', async (req, res) => {
   try {
     clearFileIndex();
+    const roots = FILE_ROOTS.map((root) => root.serverPath);
+    const commands = roots.map((root) => `find ${escCmd(root)} -xdev -not -name '.*' -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null`).join('; ');
     const { stdout } = await sshExec(
-      `timeout 20s find ${escCmd(CFG.fileManagerRoot)} -xdev -not -name '.*' -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null`,
+      `timeout 20s bash -lc ${escCmd(commands)}`,
       30000
     );
     let count = 0;
@@ -4049,7 +4935,8 @@ app.get('/api/storage/stats', async (req, res) => {
 // ─── DIRECTORY USAGE (ncdu-like) ────────────────────────────
 app.get('/api/storage/dirs', async (req, res) => {
   try {
-    const dir = await assertRemotePathInsideRoot(req.query.path || CFG.fileManagerRoot);
+    const dir = await assertRemotePathInsideRoot(req.query.path || defaultFileRoot()?.serverPath);
+    const root = fileRootForPath(dir);
     // du -d1 gives one-level deep directory sizes
     const usageScript = `
 dir=${escCmd(dir)}
@@ -4108,7 +4995,7 @@ timeout 8s du -x -sb "$dir" 2>/dev/null | tail -1
     res.json({
       dirs,
       currentPath: dir,
-      parentPath: safeParentPath(CFG.fileManagerRoot, dir),
+      parentPath: safeParentPath(root.serverPath, dir),
       totalSize,
       filesSize,
     });
@@ -4156,12 +5043,13 @@ app.post('/api/files/upload', upload.array('files', 20), async (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files provided' });
     }
-    const destDir = await assertRemotePathInsideRoot(req.body.path || CFG.fileManagerRoot);
+    const destDir = await assertRemotePathInsideRoot(req.body.path || defaultFileRoot()?.serverPath);
+    const destRoot = fileRootForPath(destDir);
     const results = [];
     for (const file of req.files) {
       let remotePath = '';
       try {
-        remotePath = joinChild(CFG.fileManagerRoot, destDir, file.originalname);
+        remotePath = joinChild(destRoot.serverPath, destDir, file.originalname);
         ensureNotProtectedFile(remotePath, 'uploaded');
         const { code: existsCode } = await sshExec(`test ! -e ${escCmd(remotePath)}`);
         if (existsCode !== 0) throw new Error('A file or folder with that name already exists');
@@ -4285,11 +5173,31 @@ setInterval(() => hlsJobs.cleanupExpired().catch(() => {}), 5 * 60 * 1000);
 })();
 
 // ─── SERVER START ────────────────────────────────────────────
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `No route for ${req.method} ${req.originalUrl}` });
+});
+
+app.use((err, req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return res.status(err.status || 500).json({
+      error: err.message || 'Internal server error',
+      code: err.code || 'INTERNAL_ERROR',
+    });
+  }
+  next(err);
+});
+
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/stream/') || req.path.startsWith('/s/')) return next();
+  if (req.path.startsWith('/api/')) return next();
+  return sendSpaIndex(res);
+});
+
 const server = http.createServer(app);
 setupWebSocket(server);
 
 server.listen(CFG.port, '0.0.0.0', () => {
-  console.log(`Cast Manager v4 running at http://0.0.0.0:${CFG.port}`);
+  console.log(`File Manager running at http://0.0.0.0:${CFG.port}`);
   const nets = require('os').networkInterfaces();
   for (const iface of Object.values(nets)) {
     for (const net of iface) {

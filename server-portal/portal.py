@@ -37,6 +37,7 @@ SERVICE_MAP = {
     8008: "image-studio",
     8009: "xbot-lan-dashboard",
     8011: "proton-vpn-portal",
+    8012: "pdf-portal",
     9091: "transmission-daemon",
 }
 
@@ -76,8 +77,9 @@ DEFAULT_SERVICES = [
         "color": "#58a6ff"
     },
     {
-        "name": "Video Manager",
-        "description": "Manage videos and cast to devices",
+        "name": "Cast Manager",
+        "description": "Cast media, manage videos, and browse server files",
+        "id": "cast-manager",
         "port": 8004,
         "icon": "\U0001f3ac",
         "color": "#f0883e"
@@ -139,6 +141,15 @@ DEFAULT_SERVICES = [
         "kind": "vpn",
         "icon": "\U0001f510",
         "color": "#38bdf8"
+    },
+    {
+        "name": "PDF Portal",
+        "description": "Markdown to polished PDF documents",
+        "id": "pdf-portal",
+        "port": 8012,
+        "url": f"http://{HOST_IP}:8012/",
+        "icon": "\U0001f4c4",
+        "color": "#f59e0b"
     }
 ]
 

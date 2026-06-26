@@ -1,12 +1,20 @@
 {
   "name": "cast-manager",
   "version": "4.0.0",
-  "description": "Full-featured media server with file management, streaming, and Chromecast casting",
+  "description": "Full-featured file manager with media streaming and Chromecast casting",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node tests/media-pipeline.test.js && node tests/starred.test.js"
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "build": "npm run frontend:build",
+    "check": "npm --prefix frontend run build",
+    "test": "node tests/media-pipeline.test.js && node tests/starred.test.js && node tests/preflight.test.js && node tests/diagnostics.test.js && node tests/drive-routes.test.js && node tests/browse-routes.test.js",
+    "test:frontend": "bash scripts/test-cast-manager-playwright.sh",
+    "test:drive-ux": "bash scripts/test-drive-ux.sh",
+    "test:api-contract": "bash scripts/test-cast-manager-api-contract.sh",
+    "test:build": "bash scripts/test-cast-manager-frontend-build.sh"
   },
   "dependencies": {
     "archiver": "^6.0.1",
@@ -18,5 +26,8 @@
     "qrcode": "^1.5.3",
     "ssh2": "^1.15.0",
     "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
   }
 }

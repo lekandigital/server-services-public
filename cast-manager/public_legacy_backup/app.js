@@ -285,24 +285,44 @@ function closePasswordPrompt() { document.getElementById('password-modal').style
 
 // ─── API Helpers ────────────────────────────────────────────
 async function api(url, options = {}) {
-  const { body, headers, silent, ...fetchOptions } = options;
+  const { body, headers, silent, method, ...fetchOptions } = options;
+  const reqMethod = (method || fetchOptions.method || 'GET').toUpperCase();
+  const hdrs = { ...(headers || {}) };
+  if (body != null && hdrs['Content-Type'] == null) hdrs['Content-Type'] = 'application/json';
+
   try {
     const res = await fetch(url, {
       ...fetchOptions,
-      headers: { 'Content-Type': 'application/json', ...(headers || {}) },
-      body: body ? JSON.stringify(body) : undefined,
+      method: reqMethod,
+      headers: hdrs,
+      body: body != null ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
+    let data = {};
+    if (text) {
+      try { data = JSON.parse(text); } catch (_) { data = { error: text.slice(0, 300) }; }
+    }
     if (!res.ok) {
-      const err = new Error(data.errorDetails?.message || data.error || `Request failed with ${res.status}`);
-      err.code = data.errorDetails?.code || data.code || '';
+      const msg = data.message || data.error || data.errorDetails?.message || `HTTP ${res.status}`;
+      const err = new Error(`${reqMethod} ${url}: ${msg}`);
+      err.code = data.stage || data.primaryFailureCode || data.errorDetails?.code || data.code || '';
       err.status = res.status;
+      err.data = data;
       throw err;
     }
     return data;
   } catch (err) {
-    if (!silent) toast(`Request failed: ${err.message}`, 'error');
+    if (!err.status && (err.name === 'TypeError' || /failed to fetch|networkerror/i.test(err.message || ''))) {
+      const netErr = new Error(`${reqMethod} ${url}: network or CORS error (${err.message})`);
+      netErr.isNetwork = true;
+      if (!silent) toast(netErr.message, 'error');
+      throw netErr;
+    }
+    if (!silent) {
+      const hint = err.data?.suggestedFix;
+      const detail = hint ? `${err.message} — ${hint}` : err.message;
+      toast(detail, 'error');
+    }
     throw err;
   }
 }
@@ -2055,43 +2075,98 @@ async function confirmCast() {
   toast('Casting...', 'info');
 
   try {
-    let endpoint = '/api/cast/start';
-    let body = {
+    const body = {
       filePath,
       seekTo: seekTo !== '00:00:00' ? seekTo : undefined,
       autoTranscode,
+      backend: mode,
       mode,
       provider: selected.provider || 'chromecast',
       deviceId: selected.device_id || selected.id,
       ...(allowPretranscode ? { allowPretranscode: true } : {}),
     };
 
-    if (customSubtitlePath || subtitleChoice) {
-      if (customSubtitlePath) body.subtitlePath = customSubtitlePath;
-      else body.subtitleId = subtitleChoice;
-    }
+    const subtitle = { mode: 'off' };
+    if (subtitleChoice === '__auto__') subtitle.mode = 'auto';
+    else if (subtitleChoice === '__burnin__') subtitle.mode = 'burn-in';
+    else if (customSubtitlePath) { subtitle.mode = 'path'; subtitle.path = customSubtitlePath; }
+    else if (subtitleChoice) { subtitle.mode = 'id'; subtitle.id = subtitleChoice; }
+    body.subtitle = subtitle;
 
-    const data = await api(endpoint, { method: 'POST', body });
+    const data = await api('/api/cast/start', { method: 'POST', body });
 
     if (data.transcoding) {
       toast(data.message, 'warning', 8000);
-      // Poll for transcoding completion
       pollTranscode(filePath, seekTo, data.jobId);
       return;
     }
 
     state.casting.filePath = filePath;
     state.casting.title = basename(filePath);
-    state.casting.state = 'playing';
+    state.casting.state = 'starting';
+    state.casting.sessionId = data.sessionId;
+    state.casting.backend = data.backend;
+    state.casting.diagnosticsUrl = data.diagnosticsUrl;
     if (data.provider || data.pipelineMode) {
       state.casting.provider = data.provider;
       state.casting.pipelineMode = data.pipelineMode;
     }
-    toast(`Casting started${data.pipelineMode ? ` (${data.pipelineMode})` : ''}`, 'success');
+    const backendLabel = data.backend || data.pipelineMode || '';
+    const autoMsg = data.autoExplanation ? ` — ${data.autoExplanation}` : '';
+    toast(`Casting started${backendLabel ? ` (${backendLabel})` : ''}${autoMsg}`, 'success', data.autoExplanation ? 8000 : 4000);
     showMiniPlayer();
     updatePositionEntry(filePath);
     startCastPolling();
-  } catch (e) { /* already toasted */ }
+  } catch (e) {
+    showCastDebugFromError(e);
+  }
+}
+
+async function runCastDoctor() {
+  try {
+    const data = await api('/api/cast/doctor/run', { method: 'POST' });
+    const panel = document.getElementById('cast-debug-panel');
+    const section = document.getElementById('cast-debug-section');
+    if (panel && section) {
+      section.style.display = 'block';
+      panel.textContent = JSON.stringify(data.report || data, null, 2);
+    }
+    toast(data.report?.ok ? 'Cast Doctor: all checks passed' : 'Cast Doctor: see diagnostics', data.report?.ok ? 'success' : 'warning', 6000);
+  } catch (err) {
+    toast(`Cast Doctor failed: ${err.message}`, 'error');
+  }
+}
+
+async function copyCastDiagnostics() {
+  try {
+    const url = state.casting.diagnosticsUrl || '/api/cast/diagnostics';
+    const data = await api(url.startsWith('/') ? url : `/${url}`, { silent: true });
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    toast('Diagnostics copied', 'success');
+  } catch (e) {
+    toast('Could not copy diagnostics', 'error');
+  }
+}
+
+function showCastDebugFromError(err) {
+  const payload = err?.data || err?.body;
+  if (!payload) return;
+  const section = document.getElementById('cast-debug-section');
+  const panel = document.getElementById('cast-debug-panel');
+  if (!section || !panel) return;
+  section.style.display = 'block';
+  panel.textContent = JSON.stringify({
+    error: payload.error || payload.message || err.message,
+    stage: payload.stage,
+    suggestedFix: payload.suggestedFix,
+    primaryFailureCode: payload.primaryFailureCode,
+    preflight: payload.preflight,
+    attemptedBackends: payload.attemptedBackends,
+    diagnosticsUrl: payload.diagnosticsUrl,
+  }, null, 2);
+  if (payload.diagnosticsUrl || payload.primaryFailureCode || payload.stage) {
+    document.getElementById('cast-modal').style.display = 'flex';
+  }
 }
 
 async function pollTranscode(filePath, seekTo, jobId) {
@@ -2209,6 +2284,7 @@ function isConfirmedNaturalEnd(info) {
   const recentStop = now - (state.casting.lastStopAt || 0) < 4000;
   const settling = now < (state.castControl?.settleUntil || 0);
   const transitionalState = ['starting', 'seeking', 'pausing', 'resuming', 'stopping', 'buffering'].includes(state.casting.state);
+  const backendTransitional = info?.starting || info?.restarting || info?.seekInProgress;
 
   return stateName === 'idle' &&
     !activeSession &&
@@ -2220,6 +2296,7 @@ function isConfirmedNaturalEnd(info) {
     !settling &&
     !state.isDraggingScrubber &&
     !transitionalState &&
+    !backendTransitional &&
     (state.castControl?.idleStreak || 0) >= 2;
 }
 
@@ -2252,6 +2329,8 @@ async function pollCastStatus() {
     state.casting.lastNormalizedStatus = info;
 
     state.casting.state = info.state || 'unknown';
+    if (info.starting && state.casting.state === 'buffering') state.casting.state = 'starting';
+    if (info.restarting || info.seekInProgress) state.casting.state = 'seeking';
     state.casting.currentTime = Number.isFinite(info.currentTime) ? info.currentTime : 0;
     state.casting.duration = Number.isFinite(info.duration) ? info.duration : 0;
     if (info.title) state.casting.title = info.title;
@@ -2261,7 +2340,7 @@ async function pollCastStatus() {
     updateDeviceIndicator();
 
     // Show mini-player when actively casting, hide when idle
-    if (info.state === 'playing' || info.state === 'paused' || info.state === 'buffering') {
+    if (info.state === 'playing' || info.state === 'paused' || info.state === 'buffering' || info.starting || info.restarting || info.seekInProgress) {
       showMiniPlayer();
     }
 
@@ -2363,11 +2442,14 @@ async function dispatchQueuedSeek() {
   const settleMs = state.castControl.seekSettleMs || 1200;
   state.castControl.seekQueued = false;
   state.castControl.seekInFlight = true;
+  state.casting.state = 'seeking';
+  updateMiniPlayer();
   beginCastCommand('seek', settleMs);
   try {
     const res = await api('/api/cast/controls', { method: 'POST', body: { action: 'seek', value: val } });
     if (!isCurrentCastCommand(cmdId)) return;
     if (res && res.state) state.casting.state = res.state;
+    if (res?.fallbackUsed) toast('Seek used stream restart', 'info', 2500);
   } catch (e) {
     // If seek fails, let polling correct state once settle window passes.
   } finally {
@@ -2386,6 +2468,7 @@ function requestSeekTo(seconds, { settleMs = 1200 } = {}) {
   const clamped = Math.max(0, Math.min(state.casting.duration, seconds));
   const target = Math.floor(clamped);
   markCastCommand('seek');
+  state.casting.state = 'seeking';
 
   // Optimistic UI update immediately
   state.casting.currentTime = clamped;

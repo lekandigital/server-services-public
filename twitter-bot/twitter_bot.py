@@ -14,11 +14,386 @@ from selenium.common.exceptions import StaleElementReferenceException, NoSuchEle
 from webdriver_manager.chrome import ChromeDriverManager
 import os
 import json
+import csv
+import socket
+import subprocess
+from urllib.parse import urlparse
 from urllib3.exceptions import MaxRetryError
 from urllib.error import URLError
 import sys
 
 from queue_dedupe import dedupe_best_pending
+
+try:
+    from curl_cffi import requests as cffi_requests
+except ImportError:
+    cffi_requests = None
+
+TRANSIENT_X_ERROR_RESULT = "x_transient_error"
+TRANSIENT_X_ERROR_PAUSE_SECONDS = (45 * 60, 75 * 60)
+CONTINUOUS_RETRY_BATCH = "continuous_follow_failed_retry"
+CONTINUOUS_RETRY_CSV = "continuous_follow_failed_candidates.csv"
+VPN_RATE_LIMIT_ENABLED = os.environ.get("VPN_RATE_LIMIT_ENABLED", "1").lower() not in ("0", "false", "no", "off")
+VPN_RATE_LIMIT_STATE = os.environ.get("VPN_RATE_LIMIT_STATE", "vpn_rate_limit_state.json")
+VPN_RATE_LIMIT_TEST_HOST = os.environ.get("VPN_RATE_LIMIT_TEST_HOST", "x.com")
+RESOLVED_USER_IDS_CACHE = os.environ.get("RESOLVED_USER_IDS_CACHE", "resolved_user_ids.json")
+X_USER_BY_REST_ID_URL = "https://x.com/i/api/graphql/xf3jd90KKBCUxdlI_tNHZw/UserByRestId"
+X_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+X_API_FEATURES = {
+    "hidden_profile_subscriptions_enabled": True,
+    "rweb_tipjar_consumption_enabled": True,
+    "responsive_web_graphql_exclude_directive_enabled": True,
+    "verified_phone_label_enabled": False,
+    "highlights_tweets_tab_ui_enabled": True,
+    "responsive_web_twitter_article_notes_tab_enabled": True,
+    "subscriptions_feature_can_gift_premium": True,
+    "creator_subscriptions_tweet_preview_api_enabled": True,
+    "responsive_web_graphql_skip_user_profile_image_extensions_enabled": False,
+    "responsive_web_graphql_timeline_navigation_enabled": True,
+}
+X_API_SESSION = None
+RESOLVED_USER_IDS = None
+
+try:
+    VPN_RATE_LIMIT_COOLDOWN_SECONDS = int(os.environ.get("VPN_RATE_LIMIT_COOLDOWN_SECONDS", "1800"))
+except ValueError:
+    VPN_RATE_LIMIT_COOLDOWN_SECONDS = 1800
+
+
+def vpn_command(args, timeout=45):
+    try:
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+        return result.returncode, result.stdout.strip(), result.stderr.strip()
+    except FileNotFoundError:
+        return 127, "", f"{args[0]} not found"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"{' '.join(args)} timed out"
+
+
+def nmcli_rows(fields, active=False):
+    args = ["nmcli", "-t", "-f", fields, "connection", "show"]
+    if active:
+        args.append("--active")
+
+    code, stdout, stderr = vpn_command(args, timeout=20)
+    if code != 0:
+        if stderr:
+            print(f"⚠️ nmcli unavailable for VPN handling: {stderr[:160]}")
+        return []
+
+    field_names = [field.strip().lower() for field in fields.split(",")]
+    rows = []
+    maxsplit = max(0, len(field_names) - 1)
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        values = line.split(":", maxsplit)
+        values += [""] * (len(field_names) - len(values))
+        rows.append(dict(zip(field_names, values)))
+    return rows
+
+
+def is_vpn_connection(row):
+    name = row.get("name", "")
+    conn_type = row.get("type", "").lower()
+    lower_name = name.lower()
+    if "killswitch" in lower_name or "kill-switch" in lower_name:
+        return False
+    return conn_type in ("vpn", "wireguard") or "vpn" in lower_name or "proton" in lower_name
+
+
+def saved_vpn_connections():
+    return [row for row in nmcli_rows("NAME,TYPE") if is_vpn_connection(row)]
+
+
+def active_vpn_connections():
+    return [row for row in nmcli_rows("NAME,TYPE,STATE,DEVICE", active=True) if is_vpn_connection(row)]
+
+
+def dns_status(host):
+    code, stdout, stderr = vpn_command(["getent", "ahostsv4", host], timeout=6)
+    if code == 0 and stdout:
+        first_addr = stdout.split()[0]
+        return True, f"{host} resolves to {first_addr}"
+    if code == 124:
+        return False, f"{host} DNS check timed out"
+    if code not in (0, 127):
+        detail = stderr or stdout or f"getent exited {code}"
+        return False, f"{host} DNS check failed: {detail[:160]}"
+
+    try:
+        socket.getaddrinfo(host, 443)
+        return True, f"{host} resolves"
+    except Exception as e:
+        return False, f"{host} DNS check failed: {e}"
+
+
+def vpn_dns_status():
+    return dns_status(VPN_RATE_LIMIT_TEST_HOST)
+
+
+def load_vpn_rate_limit_state():
+    if not os.path.exists(VPN_RATE_LIMIT_STATE):
+        return {}
+    try:
+        with open(VPN_RATE_LIMIT_STATE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"⚠️ Could not read {VPN_RATE_LIMIT_STATE}: {e}")
+        return {}
+
+
+def save_vpn_rate_limit_state(action, connection="", ok=False, detail=""):
+    state = {
+        "last_attempt_at": datetime.now().isoformat(),
+        "action": action,
+        "connection": connection,
+        "ok": bool(ok),
+        "detail": detail,
+    }
+    try:
+        with open(VPN_RATE_LIMIT_STATE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(VPN_RATE_LIMIT_STATE + ".tmp", VPN_RATE_LIMIT_STATE)
+    except Exception as e:
+        print(f"⚠️ Could not write {VPN_RATE_LIMIT_STATE}: {e}")
+
+
+def vpn_rate_limit_cooldown_remaining():
+    state = load_vpn_rate_limit_state()
+    last_attempt_at = state.get("last_attempt_at")
+    if not last_attempt_at:
+        return 0
+    try:
+        last_attempt = datetime.fromisoformat(last_attempt_at)
+    except ValueError:
+        return 0
+    elapsed = (datetime.now() - last_attempt).total_seconds()
+    return max(0, int(VPN_RATE_LIMIT_COOLDOWN_SECONDS - elapsed))
+
+
+def nmcli_connection(action, name):
+    return vpn_command(["nmcli", "connection", action, name], timeout=60)
+
+
+def disable_proton_killswitch():
+    for row in nmcli_rows("NAME,TYPE"):
+        name = row.get("name", "")
+        lower_name = name.lower()
+        if "killswitch" in lower_name or "kill-switch" in lower_name:
+            code, _, stderr = nmcli_connection("down", name)
+            if code == 0:
+                print(f"🧯 Disabled VPN kill switch connection: {name}")
+            elif stderr:
+                print(f"⚠️ Could not disable VPN kill switch {name}: {stderr[:160]}")
+
+
+def cycle_vpn_for_rate_limit(reason, force=False):
+    if not VPN_RATE_LIMIT_ENABLED:
+        print("ℹ️ VPN rate-limit handling disabled by VPN_RATE_LIMIT_ENABLED=0.")
+        return False
+
+    cooldown_remaining = vpn_rate_limit_cooldown_remaining()
+    if cooldown_remaining > 0 and not force:
+        print(f"⏳ VPN rate-limit handling is cooling down for {round(cooldown_remaining / 60, 1)} more min.")
+        return False
+
+    saved = saved_vpn_connections()
+    if not saved:
+        print("ℹ️ No saved VPN connections found for rate-limit handling.")
+        save_vpn_rate_limit_state("no_saved_vpn", ok=False, detail=reason)
+        return False
+
+    active = active_vpn_connections()
+    active_names = {row.get("name") for row in active}
+    action = "unchanged"
+    connection = ""
+    ok = False
+    detail = reason
+
+    try:
+        if active:
+            alternatives = [row for row in saved if row.get("name") not in active_names]
+            for row in active:
+                name = row.get("name", "")
+                if name:
+                    nmcli_connection("down", name)
+
+            if alternatives:
+                connection = alternatives[0].get("name", "")
+                code, _, stderr = nmcli_connection("up", connection)
+                ok = code == 0
+                action = "switched"
+                detail = stderr if stderr else reason
+            else:
+                connection = ", ".join(sorted(name for name in active_names if name))
+                disable_proton_killswitch()
+                ok = True
+                action = "turned_off"
+        else:
+            connection = saved[0].get("name", "")
+            code, _, stderr = nmcli_connection("up", connection)
+            ok = code == 0
+            action = "turned_on"
+            detail = stderr if stderr else reason
+
+        dns_ok, dns_detail = vpn_dns_status()
+        ok = ok and dns_ok
+        detail = f"{detail}; {dns_detail}" if detail else dns_detail
+        print(f"🌐 VPN rate-limit action: {action} {connection or '(none)'}; ok={ok}; {dns_detail}")
+        save_vpn_rate_limit_state(action, connection, ok, detail)
+        return ok
+    except Exception as e:
+        detail = f"{reason}; VPN handling error: {e}"
+        print(f"⚠️ VPN rate-limit handling failed: {e}")
+        save_vpn_rate_limit_state("error", connection, False, detail)
+        return False
+
+
+def page_has_transient_x_error(driver):
+    """Detect X's generic transient/rate-limit profile failure page."""
+    try:
+        page_text = driver.page_source.lower()
+        return "something went wrong" in page_text and "try reloading" in page_text
+    except Exception as e:
+        print(f"⚠️ Error checking for transient X error: {e}")
+        return False
+
+
+def pause_for_transient_x_error(context):
+    cycle_vpn_for_rate_limit(f"transient X error while {context}")
+    wait_seconds = random.uniform(*TRANSIENT_X_ERROR_PAUSE_SECONDS)
+    print(f"⏸️ X showed 'Something went wrong' while {context}. Treating it as a transient/rate-limit condition.")
+    print(f"⏳ Pausing for {round(wait_seconds / 60, 1)} min; pending follow retries stay queued for later.")
+    time.sleep(wait_seconds)
+
+
+def append_retry_result(entry, username, new_status, skip_reason=None):
+    retry_batch = entry.get("retry_batch")
+    if not retry_batch:
+        return
+
+    path = "retry_follow_results.csv"
+    fieldnames = [
+        "timestamp",
+        "retry_batch",
+        "username",
+        "source_list",
+        "status",
+        "success",
+        "skip_reason",
+        "retry_source_csv",
+    ]
+    exists = os.path.exists(path) and os.path.getsize(path) > 0
+    try:
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not exists:
+                writer.writeheader()
+            writer.writerow({
+                "timestamp": datetime.now().isoformat(),
+                "retry_batch": retry_batch,
+                "username": username,
+                "source_list": entry.get("source_list", ""),
+                "status": new_status,
+                "success": "true" if new_status == "followed" else "false",
+                "skip_reason": skip_reason or entry.get("skip_reason", ""),
+                "retry_source_csv": entry.get("retry_source_csv", ""),
+            })
+    except Exception as e:
+        print(f"⚠️ Error appending retry result: {e}")
+
+
+def retry_wait_seconds(entry, now=None):
+    retry_not_before = entry.get("retry_not_before")
+    if not retry_not_before:
+        return 0
+    now = now or datetime.now()
+    try:
+        ready_at = datetime.fromisoformat(retry_not_before)
+    except ValueError:
+        return 0
+    return max(0, int((ready_at - now).total_seconds()))
+
+
+def append_continuous_retry_candidate(entry, username, reason, retry_not_before):
+    path = CONTINUOUS_RETRY_CSV
+    fieldnames = [
+        "timestamp",
+        "retry_batch",
+        "username",
+        "source_list",
+        "reason",
+        "retry_attempts",
+        "retry_not_before",
+        "retry_source_csv",
+    ]
+    exists = os.path.exists(path) and os.path.getsize(path) > 0
+    try:
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not exists:
+                writer.writeheader()
+            writer.writerow({
+                "timestamp": datetime.now().isoformat(),
+                "retry_batch": entry.get("retry_batch", CONTINUOUS_RETRY_BATCH),
+                "username": username,
+                "source_list": entry.get("source_list", ""),
+                "reason": reason,
+                "retry_attempts": entry.get("retry_attempts", 0),
+                "retry_not_before": retry_not_before,
+                "retry_source_csv": entry.get("retry_source_csv", CONTINUOUS_RETRY_CSV),
+            })
+    except Exception as e:
+        print(f"⚠️ Error appending continuous retry candidate: {e}")
+
+
+def schedule_follow_retry(username, reason, delay_hours=(2, 6)):
+    queue_file = "queue.json"
+    if not os.path.exists(queue_file):
+        return None
+
+    username_lower = username.lower()
+    retry_not_before = (datetime.now() + timedelta(hours=random.uniform(*delay_hours))).isoformat()
+    try:
+        with open(queue_file, "r", encoding="utf-8") as f:
+            queue = json.load(f)
+
+        entry = None
+        for candidate in queue:
+            if candidate.get("username", "").lower() == username_lower:
+                entry = candidate
+                break
+
+        if entry is None:
+            entry = {
+                "username": username,
+                "source_list": CONTINUOUS_RETRY_BATCH,
+                "added_at": datetime.now().isoformat(),
+            }
+            queue.append(entry)
+
+        entry["status"] = "pending_follow"
+        entry["timestamp"] = ""
+        entry.pop("skip_reason", None)
+        entry.setdefault("retry_batch", CONTINUOUS_RETRY_BATCH)
+        entry.setdefault("retry_source_csv", CONTINUOUS_RETRY_CSV)
+        entry["retry_reason"] = "continuous_follow_retry"
+        entry["retry_last_reason"] = reason
+        entry["retry_last_timestamp"] = datetime.now().isoformat()
+        entry["retry_not_before"] = retry_not_before
+        entry["retry_attempts"] = int(entry.get("retry_attempts") or 0) + 1
+
+        with open(queue_file + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(queue, f, indent=1)
+        os.replace(queue_file + ".tmp", queue_file)
+
+        append_continuous_retry_candidate(entry, username, reason, retry_not_before)
+        append_retry_result(entry, username, "retry_scheduled", reason)
+        return retry_not_before
+    except Exception as e:
+        print(f"⚠️ Error scheduling retry for @{username}: {e}")
+        return None
 
 # Helper function to update queue.json status
 def update_queue_status(username, new_status, skip_reason=None):
@@ -33,6 +408,7 @@ def update_queue_status(username, new_status, skip_reason=None):
         
         username_lower = username.lower()
         updated = False
+        updated_entry = None
         for entry in queue:
             if entry.get("username", "").lower() == username_lower:
                 entry["status"] = new_status
@@ -40,6 +416,7 @@ def update_queue_status(username, new_status, skip_reason=None):
                 if skip_reason:
                     entry["skip_reason"] = skip_reason
                 updated = True
+                updated_entry = entry
                 break
         
         if updated:
@@ -66,6 +443,9 @@ def update_queue_status(username, new_status, skip_reason=None):
                         hf.write(json.dumps(history_entry) + "\n")
             except Exception as he:
                 print(f"⚠️ Error appending to history.jsonl: {he}")
+
+            if updated_entry:
+                append_retry_result(updated_entry, username, new_status, skip_reason)
     except Exception as e:
         print(f"⚠️ Error updating queue.json: {e}")
 
@@ -154,6 +534,205 @@ def save_debug_snapshot(driver, prefix):
         print(f"📸 Debug snapshot saved to {screenshot_path}")
     except Exception as e:
         print(f"⚠️ Failed to save debug snapshot: {e}")
+
+
+def chromedriver_service():
+    candidates = []
+    cache_root = os.path.expanduser("~/.wdm/drivers/chromedriver")
+    for root, _dirs, files in os.walk(cache_root):
+        for name in files:
+            if name == "chromedriver":
+                path = os.path.join(root, name)
+                if os.access(path, os.X_OK):
+                    candidates.append(path)
+
+    if candidates:
+        candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        print(f"✅ Using cached ChromeDriver: {candidates[0]}")
+        return Service(candidates[0])
+
+    try:
+        return Service(ChromeDriverManager().install())
+    except Exception as e:
+        print(f"⚠️ Could not reach ChromeDriverManager: {e}")
+
+    raise RuntimeError("No cached ChromeDriver found and ChromeDriverManager is unreachable")
+
+
+def first_exception_line(error):
+    return str(error).splitlines()[0][:220]
+
+
+def browser_current_host(driver):
+    try:
+        return (urlparse(driver.current_url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def domain_matches_host(cookie_domain, host):
+    host = (host or "").lower().strip(".")
+    domain = (cookie_domain or "").lower().strip(".")
+    return bool(host and domain and (host == domain or host.endswith("." + domain)))
+
+
+def x_cookie_domain(raw_domain, target_domain):
+    target_domain = (target_domain or "x.com").lower().strip(".")
+    domain = (raw_domain or target_domain).lower().strip()
+    domain = domain.lstrip(".")
+    if domain == "twitter.com" or domain.endswith(".twitter.com"):
+        domain = target_domain
+    elif domain != target_domain and not domain.endswith("." + target_domain):
+        domain = target_domain
+    return "." + domain
+
+
+def build_x_cookie(exported_cookie, target_domain):
+    cookie = {
+        "name": exported_cookie["name"],
+        "value": exported_cookie["value"],
+        "domain": x_cookie_domain(exported_cookie.get("domain"), target_domain),
+        "path": exported_cookie.get("path", "/") or "/",
+        "secure": exported_cookie.get("secure", True),
+        "httpOnly": exported_cookie.get("httpOnly", False),
+    }
+    if "expirationDate" in exported_cookie:
+        cookie["expiry"] = int(exported_cookie["expirationDate"])
+    elif "expiry" in exported_cookie:
+        cookie["expiry"] = int(exported_cookie["expiry"])
+    return cookie
+
+
+def is_name_resolution_error(error):
+    message = str(error)
+    return "ERR_NAME_NOT_RESOLVED" in message or "DNS_PROBE" in message
+
+
+def recover_from_name_resolution_error(url, error):
+    host = (urlparse(url).hostname or VPN_RATE_LIMIT_TEST_HOST).lower()
+    dns_ok, dns_detail = dns_status(host)
+    print(f"🌐 Chrome could not resolve {host}: {first_exception_line(error)}")
+    print(f"🌐 System DNS check: {dns_detail}")
+    if not dns_ok:
+        cycle_vpn_for_rate_limit(f"name resolution failed while loading {url}", force=True)
+
+
+def load_resolved_user_ids():
+    global RESOLVED_USER_IDS
+    if RESOLVED_USER_IDS is not None:
+        return RESOLVED_USER_IDS
+    if not os.path.exists(RESOLVED_USER_IDS_CACHE):
+        RESOLVED_USER_IDS = {}
+        return RESOLVED_USER_IDS
+    try:
+        with open(RESOLVED_USER_IDS_CACHE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        RESOLVED_USER_IDS = {str(k): str(v) for k, v in data.items() if v}
+    except Exception as e:
+        print(f"⚠️ Could not read {RESOLVED_USER_IDS_CACHE}: {e}")
+        RESOLVED_USER_IDS = {}
+    return RESOLVED_USER_IDS
+
+
+def save_resolved_user_ids():
+    if RESOLVED_USER_IDS is None:
+        return
+    try:
+        with open(RESOLVED_USER_IDS_CACHE + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(RESOLVED_USER_IDS, f, indent=2, sort_keys=True)
+        os.replace(RESOLVED_USER_IDS_CACHE + ".tmp", RESOLVED_USER_IDS_CACHE)
+    except Exception as e:
+        print(f"⚠️ Could not write {RESOLVED_USER_IDS_CACHE}: {e}")
+
+
+def x_api_session():
+    global X_API_SESSION
+    if X_API_SESSION is not None:
+        return X_API_SESSION
+    if cffi_requests is None:
+        print("⚠️ curl_cffi is not installed; cannot resolve numeric X user IDs.")
+        return None
+    try:
+        with open("cacheforlogin.json", "r", encoding="utf-8") as f:
+            raw_cookies = json.load(f)
+        session = cffi_requests.Session(impersonate="chrome120")
+        for c in raw_cookies:
+            session.cookies.set(c["name"], c["value"], domain=x_cookie_domain(c.get("domain"), "x.com"))
+        ct0 = session.cookies.get("ct0")
+        if not ct0:
+            print("⚠️ Could not resolve numeric X user IDs: ct0 cookie missing.")
+            return None
+        session.headers.update({
+            "authorization": X_BEARER,
+            "x-csrf-token": ct0,
+            "x-twitter-auth-type": "OAuth2Session",
+            "x-twitter-active-user": "yes",
+            "content-type": "application/json",
+            "referer": "https://x.com/home",
+            "origin": "https://x.com",
+        })
+        X_API_SESSION = session
+        return X_API_SESSION
+    except Exception as e:
+        print(f"⚠️ Could not build X API session for ID resolution: {e}")
+        return None
+
+
+def resolve_numeric_user_id(user_id):
+    user_id = str(user_id).strip()
+    if not user_id.isdigit():
+        return None
+
+    cache = load_resolved_user_ids()
+    cached = cache.get(user_id)
+    if cached:
+        return cached
+
+    session = x_api_session()
+    if session is None:
+        return None
+
+    try:
+        response = session.get(
+            X_USER_BY_REST_ID_URL,
+            params={
+                "variables": json.dumps({"userId": user_id, "withSafetyModeUserFields": True}),
+                "features": json.dumps(X_API_FEATURES),
+            },
+            timeout=15,
+        )
+        if response.status_code == 429:
+            print(f"⚠️ X ID resolver rate-limited for {user_id}")
+            return None
+        if response.status_code != 200:
+            print(f"⚠️ X ID resolver returned HTTP {response.status_code} for {user_id}")
+            return None
+        user = response.json().get("data", {}).get("user", {}).get("result", {})
+        if user.get("__typename") == "UserUnavailable":
+            print(f"⚠️ X ID resolver says {user_id} is unavailable: {user.get('reason', 'unknown')}")
+            return None
+        screen_name = user.get("legacy", {}).get("screen_name")
+        if not screen_name:
+            print(f"⚠️ X ID resolver found no screen_name for {user_id}")
+            return None
+        cache[user_id] = screen_name
+        save_resolved_user_ids()
+        print(f"🔎 Resolved X user ID {user_id} -> @{screen_name}")
+        return screen_name
+    except Exception as e:
+        print(f"⚠️ X ID resolver failed for {user_id}: {e}")
+        return None
+
+
+def profile_target(username):
+    username = str(username).strip()
+    if username.isdigit():
+        resolved = resolve_numeric_user_id(username)
+        if resolved:
+            return resolved, f"https://x.com/{resolved}"
+        return username, f"https://x.com/i/user/{username}"
+    return username, f"https://x.com/{username}"
+
 
 class RateLimit:
     def __init__(self, daily_limit, hourly_limit, burst_limit=None, burst_window=300, action_type='unknown'):
@@ -268,6 +847,8 @@ def setup_driver():
     opts.add_argument("--mute-audio")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--dns-prefetch-disable")
+    opts.add_argument("--disable-features=AsyncDns")
     
     # Throttling and backgrounding can cause issues during long runs
     opts.add_argument("--disable-background-timer-throttling")
@@ -294,7 +875,7 @@ def setup_driver():
     }
     opts.add_experimental_option("prefs", prefs)
     
-    service = Service(ChromeDriverManager().install())
+    service = chromedriver_service()
     driver = webdriver.Chrome(service=service, options=opts)
     driver.set_page_load_timeout(45)
     driver.implicitly_wait(10)
@@ -344,6 +925,7 @@ def safe_get(driver, url, retries=3):
             if any(indicator in page_source_lower for indicator in rate_limit_indicators):
                 wait_time = min(180, 30 * attempt + random.uniform(30, 60))
                 print(f"⚠️ Rate limited on {url} (attempt {attempt}/{retries}). Waiting {round(wait_time)}s...")
+                cycle_vpn_for_rate_limit(f"rate-limit page while loading {url}")
                 time.sleep(wait_time)
                 continue
                 
@@ -351,6 +933,8 @@ def safe_get(driver, url, retries=3):
             
         except Exception as e:
             print(f"❌ Error loading {url} (attempt {attempt}/{retries}): {str(e)[:100]}")
+            if is_name_resolution_error(e):
+                recover_from_name_resolution_error(url, e)
             
             if attempt < retries:
                 wait_time = min(60, attempt * 15 + random.uniform(10, 20))
@@ -365,22 +949,74 @@ def load_cookies_from_file(driver, cookie_file, domain):
     """Load cookies from a JSON file and add them to the WebDriver."""
     with open(cookie_file, "r") as f:
         cookies = json.load(f)
-    driver.get(f"https://{domain}")
-    for c in cookies:
-        cookie = {
-            "name": c["name"],
-            "value": c["value"],
-            "domain": c["domain"],
-            "path": c.get("path", "/"),
-            "secure": c.get("secure", False),
-            "httpOnly": c.get("httpOnly", False),
-        }
-        if "expirationDate" in c:
-            cookie["expiry"] = int(c["expirationDate"])
+    target_url = f"https://{domain}/"
+    if not safe_get(driver, target_url, retries=2):
+        print(f"⚠️ Could not fully load {target_url} before cookie injection; continuing with CDP-safe injection.")
         try:
-            driver.add_cookie(cookie)
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+    except Exception as e:
+        print(f"⚠️ Could not enable CDP network domain for cookies: {first_exception_line(e)}")
+
+    current_host = browser_current_host(driver)
+    webdriver_available = domain_matches_host(domain, current_host)
+    if not webdriver_available:
+        print(f"ℹ️ Browser is on {current_host or 'no resolved host'} after preload; using CDP cookie injection for {domain}.")
+
+    loaded = 0
+    webdriver_loaded = 0
+    cdp_loaded = 0
+    for c in cookies:
+        cookie_name = c.get("name", "(unnamed)")
+        try:
+            cookie = build_x_cookie(c, domain)
         except Exception as e:
-            print(f"Error adding cookie {c['name']} for {domain}: {e}")
+            print(f"⚠️ Skipping malformed cookie {cookie_name}: {first_exception_line(e)}")
+            continue
+
+        if cookie.get("expiry") and cookie["expiry"] <= int(time.time()):
+            print(f"ℹ️ Skipping expired cookie {cookie_name}")
+            continue
+
+        webdriver_error = None
+        if webdriver_available:
+            try:
+                driver.add_cookie(cookie)
+                loaded += 1
+                webdriver_loaded += 1
+                continue
+            except Exception as e:
+                webdriver_error = first_exception_line(e)
+
+        try:
+            cdp_cookie = {
+                "name": cookie["name"],
+                "value": cookie["value"],
+                "url": target_url,
+                "domain": cookie["domain"],
+                "path": cookie.get("path", "/"),
+                "secure": cookie.get("secure", False),
+                "httpOnly": cookie.get("httpOnly", False),
+            }
+            if "expiry" in cookie:
+                cdp_cookie["expires"] = cookie["expiry"]
+            result = driver.execute_cdp_cmd("Network.setCookie", cdp_cookie)
+            if result.get("success"):
+                loaded += 1
+                cdp_loaded += 1
+                if webdriver_error:
+                    print(f"✅ Added cookie {cookie_name} via CDP fallback after WebDriver add failed: {webdriver_error}")
+            else:
+                print(f"⚠️ CDP cookie add returned success=false for {cookie_name}")
+        except Exception as cdp_error:
+            if webdriver_error:
+                print(f"⚠️ WebDriver cookie add failed for {cookie_name}: {webdriver_error}")
+            print(f"⚠️ CDP cookie fallback failed for {cookie_name}: {first_exception_line(cdp_error)}")
+
+    print(f"🍪 Loaded {loaded}/{len(cookies)} cookies for {domain} ({webdriver_loaded} WebDriver, {cdp_loaded} CDP).")
 
 
 def check_session_alive(driver):
@@ -519,23 +1155,32 @@ def robust_click(driver, selector, retries=3, delay=1):
 def follow_user(driver, username, like_limiter):
     """Follow a user and like their recent posts with anti-detection measures"""
     try:
-        url = f"https://x.com/i/user/{username}" if username.isdigit() else f"https://x.com/{username}"
+        queue_username = str(username).strip()
+        profile_username, url = profile_target(queue_username)
+        profile_lower = profile_username.lower()
+        if profile_username != queue_username:
+            print(f"🔎 Following queued ID {queue_username} as @{profile_username}")
         if not safe_get(driver, url):
             return False
             
         # Initial browsing delay - human behavior simulation
         browse_delay = random.uniform(3, 8)
-        print(f"👀 Browsing @{username}'s profile for {round(browse_delay, 1)}s...")
+        print(f"👀 Browsing @{profile_username}'s profile for {round(browse_delay, 1)}s...")
         time.sleep(browse_delay)
         
+        if page_has_transient_x_error(driver):
+            print(f"⏸️ @{profile_username}: X returned 'Something went wrong'; not marking as skipped.")
+            save_debug_snapshot(driver, f"x_transient_follow_{queue_username}")
+            return TRANSIENT_X_ERROR_RESULT
+
         # Detect deleted/suspended/non-existent pages before wasting time
         try:
             page_text = driver.page_source.lower()
             if "this page doesn" in page_text or "this account doesn" in page_text:
-                print(f"⚠️ @{username}: page doesn't exist (deleted/invalid). Skipping permanently.")
+                print(f"⚠️ @{profile_username}: page doesn't exist (deleted/invalid). Skipping permanently.")
                 return "not_found"
             if "account suspended" in page_text or "account is suspended" in page_text:
-                print(f"⚠️ @{username}: account suspended. Skipping permanently.")
+                print(f"⚠️ @{profile_username}: account suspended. Skipping permanently.")
                 return "not_found"
         except Exception:
             pass
@@ -549,13 +1194,13 @@ def follow_user(driver, username, like_limiter):
         try:
             # Check for following status
             following_indicators = [
-                f"//button[@aria-label='Following @{username}']",  # Very specific aria-label
-                f"//span[text()='Following' and ancestor::button[contains(@aria-label, '@{username}')]]"  # Following text in user-specific button
+                f"//button[@aria-label='Following @{profile_username}']",  # Very specific aria-label
+                f"//span[text()='Following' and ancestor::button[contains(@aria-label, '@{profile_username}')]]"  # Following text in user-specific button
             ]
             
             # Check for pending status
             pending_indicators = [
-                f"//button[@aria-label='Pending @{username}']",    # Very specific pending
+                f"//button[@aria-label='Pending @{profile_username}']",    # Very specific pending
                 f"//button[contains(@data-testid, '-cancel')]//span[text()='Pending']",  # Pending button with cancel testid
                 f"//span[text()='Pending' and ancestor::button[contains(@data-testid, 'cancel')]]"  # Pending text in cancel button
             ]
@@ -573,7 +1218,7 @@ def follow_user(driver, username, like_limiter):
                     if element and element.is_displayed():
                         # Triple-check: verify the element is actually about this specific user
                         aria_label = element.get_attribute("aria-label") or ""
-                        if f"@{username}" in aria_label.lower():
+                        if f"@{profile_lower}" in aria_label.lower():
                             already_following = True
                             found_indicator = f"{indicator} -> '{aria_label}'"
                             break
@@ -595,27 +1240,27 @@ def follow_user(driver, username, like_limiter):
                         continue
             
             if already_following:
-                print(f"ℹ️ Already following @{username}. Skipping.")
+                print(f"ℹ️ Already following @{profile_username}. Skipping.")
                 return "skipped"
             elif is_pending:
-                print(f"ℹ️ Follow request pending for @{username}. Skipping.")
+                print(f"ℹ️ Follow request pending for @{profile_username}. Skipping.")
                 return "skipped"
             else:
                 # Proceeding with follow - no need to announce
                 pass
                 
         except Exception as e:
-            print(f"⚠️ Error checking follow status for @{username}: {str(e)[:50]}")
+            print(f"⚠️ Error checking follow status for @{profile_username}: {str(e)[:50]}")
             # If check fails, assume NOT following and try to follow
         
         # Like posts before following (more natural engagement pattern)
         liked_count = 0
         if like_limiter.can_perform():
-            liked_count = like_recent_posts(driver, username, like_limiter, max_likes=random.randint(1, 3))
+            liked_count = like_recent_posts(driver, profile_username, like_limiter, max_likes=random.randint(1, 3))
         
         # Find and click follow button with robust retries
         follow_selectors = [
-            f"//button[@aria-label='Follow @{username}' and not(contains(@aria-label, 'Following'))]", # Specific
+            f"//button[@aria-label='Follow @{profile_username}' and not(contains(@aria-label, 'Following'))]", # Specific
             "//button[.//span[text()='Follow'] and not(.//span[text()='Following'])]",                 # Generic
             "//div[@data-testid='placementTracking']//button[.//span[text()='Follow']]",              # Contextual
             "//button[contains(@aria-label, 'Follow')]"                                               # Fallback
@@ -624,7 +1269,7 @@ def follow_user(driver, username, like_limiter):
         followed_successfully = False
         for selector in follow_selectors:
             if robust_click(driver, selector):
-                print(f"✅ Followed @{username} using selector: {selector[:40]}...")
+                print(f"✅ Followed @{profile_username} using selector: {selector[:40]}...")
                 followed_successfully = True
                 break
         
@@ -635,8 +1280,8 @@ def follow_user(driver, username, like_limiter):
             try:
                 # Relaxed verification: Just look for "Following" or "Pending" anywhere in a button
                 verify_selectors = [
-                    f"//button[contains(@aria-label, 'Following @{username}')]",
-                    f"//button[contains(@aria-label, 'Pending @{username}')]",
+                    f"//button[contains(@aria-label, 'Following @{profile_username}')]",
+                    f"//button[contains(@aria-label, 'Pending @{profile_username}')]",
                     "//button[.//span[text()='Following']]",
                     "//button[.//span[text()='Pending']]"
                 ]
@@ -650,26 +1295,30 @@ def follow_user(driver, username, like_limiter):
                         continue
                 
                 if verified:
-                    print(f"✅ Follow confirmed for @{username}")
+                    print(f"✅ Follow confirmed for @{profile_username}")
                 else:
-                    print(f"⚠️ Could not verify follow state change for @{username}")
-                    save_debug_snapshot(driver, f"verify_fail_{username}")
+                    print(f"⚠️ Could not verify follow state change for @{profile_username}")
+                    save_debug_snapshot(driver, f"verify_fail_{queue_username}")
                     # Check if session is still alive - if not, this follow was fake
                     if not check_session_alive(driver):
-                        print(f"🚨 SESSION EXPIRED! Follow of @{username} was NOT real. Aborting.")
+                        print(f"🚨 SESSION EXPIRED! Follow of @{profile_username} was NOT real. Aborting.")
                         return False
             except Exception as e:
-                print(f"⚠️ Error verifying follow for @{username}: {e}")
-                save_debug_snapshot(driver, f"verify_error_{username}")
+                print(f"⚠️ Error verifying follow for @{profile_username}: {e}")
+                save_debug_snapshot(driver, f"verify_error_{queue_username}")
             
             if liked_count > 0:
                 print(f"💝 Bonus: Liked {liked_count} posts during follow")
             
-            print(f"📝 @{username} followed; will unfollow after 3 days")
+            print(f"📝 @{profile_username} followed; will unfollow after 3 days")
             return True
         else:
-            print(f"❌ No suitable follow button found for @{username}")
-            save_debug_snapshot(driver, f"follow_fail_{username}")
+            if page_has_transient_x_error(driver):
+                print(f"⏸️ @{profile_username}: X returned 'Something went wrong' after follow-button search; not marking as skipped.")
+                save_debug_snapshot(driver, f"x_transient_follow_{queue_username}")
+                return TRANSIENT_X_ERROR_RESULT
+            print(f"❌ No suitable follow button found for @{profile_username}")
+            save_debug_snapshot(driver, f"follow_fail_{queue_username}")
             return False
         
     except Exception as e:
@@ -784,22 +1433,30 @@ def like_recent_posts(driver, username, like_limiter, max_likes=2):
 def unfollow_user(driver, username):
     """Unfollow a user with a robust, multi-path strategy."""
     try:
-        url = f"https://x.com/i/user/{username}" if username.isdigit() else f"https://x.com/{username}"
+        queue_username = str(username).strip()
+        profile_username, url = profile_target(queue_username)
+        if profile_username != queue_username:
+            print(f"🔎 Unfollowing queued ID {queue_username} as @{profile_username}")
         if not safe_get(driver, url):
             return False
             
         browse_delay = random.uniform(2, 5)
-        print(f"👀 Checking @{username}'s profile for {round(browse_delay, 1)}s...")
+        print(f"👀 Checking @{profile_username}'s profile for {round(browse_delay, 1)}s...")
         time.sleep(browse_delay)
         
+        if page_has_transient_x_error(driver):
+            print(f"⏸️ @{profile_username}: X returned 'Something went wrong'; not marking as unfollowed.")
+            save_debug_snapshot(driver, f"x_transient_unfollow_{queue_username}")
+            return TRANSIENT_X_ERROR_RESULT
+
         # Detect deleted/suspended/non-existent pages before wasting time
         try:
             page_text = driver.page_source.lower()
             if "this page doesn" in page_text or "this account doesn" in page_text:
-                print(f"⚠️ @{username}: page doesn't exist (deleted/invalid). Skipping.")
+                print(f"⚠️ @{profile_username}: page doesn't exist (deleted/invalid). Skipping.")
                 return True
             if "account suspended" in page_text or "account is suspended" in page_text:
-                print(f"⚠️ @{username}: account suspended. Skipping.")
+                print(f"⚠️ @{profile_username}: account suspended. Skipping.")
                 return True
         except Exception:
             pass
@@ -810,18 +1467,18 @@ def unfollow_user(driver, username):
         # Check if they follow us back, which is a reason to skip
         try:
             if driver.find_element(By.XPATH, "//span[contains(text(), 'Follows you')]").is_displayed():
-                print(f"ℹ️ @{username} follows you back. Skipping unfollow.")
+                print(f"ℹ️ @{profile_username} follows you back. Skipping unfollow.")
                 return "follows_back"  # Distinct return value - don't record as unfollowed
         except:
             pass
 
         # --- UNFOLLOW STRATEGY ---
-        print(f"Attempting to unfollow @{username}...")
+        print(f"Attempting to unfollow @{profile_username}...")
 
         # --- STRATEGY 1: Cancel Pending Follow Request ---
         # Check if there's a pending follow request that can be cancelled
         pending_cancel_selectors = [
-            f"//button[contains(@data-testid, '{username}') and contains(@data-testid, 'cancel')]",
+            f"//button[contains(@data-testid, '{profile_username}') and contains(@data-testid, 'cancel')]",
             f"//button[contains(@data-testid, 'cancel')]//span[text()='Pending']"
         ]
         
@@ -833,7 +1490,7 @@ def unfollow_user(driver, username):
                 # Click the "Discard" confirmation button
                 discard_button_selector = "//button[@data-testid='confirmationSheetConfirm']//span[text()='Discard']"
                 if robust_click(driver, discard_button_selector):
-                    print(f"✅ Cancelled pending follow request for @{username}.")
+                    print(f"✅ Cancelled pending follow request for @{profile_username}.")
                     return True
                 else:
                     print("❌ Failed to click 'Discard' button. Trying other methods.")
@@ -841,14 +1498,14 @@ def unfollow_user(driver, username):
 
         # --- STRATEGY 2: Standard "Following" Button ---
         # This is the most common button for established follows.
-        standard_unfollow_selector = f"//div[@data-testid='UserProfileHeader_Items']//button[contains(@aria-label, 'Following @{username}')]"
+        standard_unfollow_selector = f"//div[@data-testid='UserProfileHeader_Items']//button[contains(@aria-label, 'Following @{profile_username}')]"
         if robust_click(driver, standard_unfollow_selector):
             print("✅ Clicked standard 'Following' button.")
             time.sleep(random.uniform(1, 2))
             
             confirm_button_selector = "//button[@data-testid='confirmationSheetConfirm']"
             if robust_click(driver, confirm_button_selector):
-                print(f"✅ Unfollowed @{username} (Standard Flow).")
+                print(f"✅ Unfollowed @{profile_username} (Standard Flow).")
                 return True
             else:
                 print("❌ Failed to click confirmation button. Assuming unfollow failed but moving on.")
@@ -858,7 +1515,7 @@ def unfollow_user(driver, username):
         print("ℹ️ Standard button not found or failed. Trying Premium unfollow via aria-label trigger.")
         # Try specific selector first, then generic (for numeric IDs where screen name differs)
         premium_trigger_selectors = [
-            f"//button[@aria-label='Unfollow @{username}' and @aria-haspopup='menu']",
+            f"//button[@aria-label='Unfollow @{profile_username}' and @aria-haspopup='menu']",
             "//button[starts-with(@aria-label, 'Unfollow @') and @aria-haspopup='menu']"
         ]
         premium_menu_opened = False
@@ -870,22 +1527,22 @@ def unfollow_user(driver, username):
                 
                 # Now click the actual 'Unfollow' option in the dropdown (generic — works for any screen name)
                 unfollow_menu_item_selectors = [
-                    f"//div[@role='menu']//div[@role='menuitem']//span[text()='Unfollow @{username}']",
+                    f"//div[@role='menu']//div[@role='menuitem']//span[text()='Unfollow @{profile_username}']",
                     "//div[@role='menu']//div[@role='menuitem']//span[contains(text(), 'Unfollow @')]"
                 ]
                 for menu_sel in unfollow_menu_item_selectors:
                     if robust_click(driver, menu_sel):
-                        print(f"✅ Unfollowed @{username} via Premium menu (aria-label path).")
+                        print(f"✅ Unfollowed @{profile_username} via Premium menu (aria-label path).")
                         return True
                 print("⚠️ Failed to click 'Unfollow' in opened Premium menu.")
                 ActionChains(driver).send_keys(Keys.ESCAPE).perform()
                 break
         if not premium_menu_opened:
-            print(f"ℹ️ Premium unfollow trigger not found for @{username}.")
+            print(f"ℹ️ Premium unfollow trigger not found for @{profile_username}.")
 
         # Path 1: Try the "Premium" account flow (three-dots menu / userActions button)
         more_options_selectors = [
-            f"//a[@href='/{username}']//ancestor::div[2]//div[@data-testid='userActions']",
+            f"//a[@href='/{profile_username}']//ancestor::div[2]//div[@data-testid='userActions']",
             "//div[@data-testid='userActions']"  # Generic fallback for numeric IDs (redirected URL)
         ]
         for more_options_selector in more_options_selectors:
@@ -895,7 +1552,7 @@ def unfollow_user(driver, username):
                 
                 unfollow_menu_item_selector = "//div[@role='menuitem']//span[contains(text(), 'Unfollow @')]"
                 if robust_click(driver, unfollow_menu_item_selector):
-                    print(f"✅ Unfollowed @{username} (Premium Flow).")
+                    print(f"✅ Unfollowed @{profile_username} (Premium Flow).")
                     return True
                 else:
                     print("⚠️ Failed to click unfollow in menu. Closing menu and trying standard flow.")
@@ -905,8 +1562,8 @@ def unfollow_user(driver, username):
         # Path 2: Try the "Standard" account flow (the "Following" button)
         print("ℹ️ Premium flow failed or not applicable. Trying standard flow.")
         following_selectors = [
-            f"//button[@aria-label='Following @{username}']",
-            f"//button[@data-testid='{username}-unfollow']",
+            f"//button[@aria-label='Following @{profile_username}']",
+            f"//button[@data-testid='{profile_username}-unfollow']",
             "//button[starts-with(@aria-label, 'Following @')]"  # Generic fallback for numeric IDs
         ]
 
@@ -917,17 +1574,21 @@ def unfollow_user(driver, username):
 
                 confirm_button_selector = "//button[@data-testid='confirmationSheetConfirm']"
                 if robust_click(driver, confirm_button_selector):
-                    print(f"✅ Unfollowed @{username} (Standard Flow).")
+                    print(f"✅ Unfollowed @{profile_username} (Standard Flow).")
                     return True
                 else:
                     print("❌ Failed to click confirmation button. Assuming action completed or failed.")
                     return True # Return True to avoid getting stuck
 
-        print(f"❌ All unfollow methods failed for @{username}.")
-        save_debug_snapshot(driver, f"unfollow_allfail_{username}")
+        print(f"❌ All unfollow methods failed for @{profile_username}.")
+        save_debug_snapshot(driver, f"unfollow_allfail_{queue_username}")
+        if page_has_transient_x_error(driver):
+            print(f"⏸️ @{profile_username}: X returned 'Something went wrong' after unfollow-button search; not marking as unfollowed.")
+            save_debug_snapshot(driver, f"x_transient_unfollow_{queue_username}")
+            return TRANSIENT_X_ERROR_RESULT
         # Check if session is still alive
         if not check_session_alive(driver):
-            print(f"🚨 SESSION EXPIRED! Unfollow of @{username} was NOT real. Aborting.")
+            print(f"🚨 SESSION EXPIRED! Unfollow of @{profile_username} was NOT real. Aborting.")
             return False
         # If session is alive, user may genuinely already be unfollowed
         print(f"ℹ️ Session is alive but unfollow buttons not found. Assuming already unfollowed.")
@@ -2511,14 +3172,14 @@ def extract_username_from_cell(cell):
 def unfollow_user_direct(driver, username):
     """Unfollow user by clicking their Following button on profile"""
     try:
-        print(f"🎯 Unfollowing @{username}...")
-        url = f"https://x.com/i/user/{username}" if username.isdigit() else f"https://x.com/{username}"
+        profile_username, url = profile_target(username)
+        print(f"🎯 Unfollowing @{profile_username}...")
         if not safe_get(driver, url):
             return False
         time.sleep(random.uniform(2, 4))
 
         following_button_xpaths = [
-            f"//button[@aria-label='Following @{username}']",
+            f"//button[@aria-label='Following @{profile_username}']",
             "//button[.//span[text()='Following']]",
             "//div[@data-testid='placementTracking']//button[contains(@aria-label, 'Following')]"
         ]
@@ -2877,9 +3538,16 @@ def main():
                             queue = json.load(f)
                         print(f"📋 Loaded queue.json: {len(queue)} total entries")
 
-                        pending_entries = [
+                        pending_entries_all = [
                             e for e in queue if e.get("status") == "pending_follow"
                         ]
+                        pending_entries = []
+                        retry_waiting = 0
+                        for entry in pending_entries_all:
+                            if retry_wait_seconds(entry, current_time) > 0:
+                                retry_waiting += 1
+                            else:
+                                pending_entries.append(entry)
 
                         deduped_ordered, _sizes = dedupe_best_pending(pending_entries)
 
@@ -2897,15 +3565,16 @@ def main():
                                 continue
                             usernames.append(u)
 
-                        total_raw = len(pending_entries)
-                        dup_removed = total_raw - len(deduped_ordered)
-                        if not pending_entries:
+                        total_raw = len(pending_entries_all)
+                        ready_raw = len(pending_entries)
+                        dup_removed = ready_raw - len(deduped_ordered)
+                        if not pending_entries_all:
                             print("⚠️ No pending follows in queue.json")
                         else:
-                            print(f"📋 Pending rows: {total_raw}, unique usernames: {len(deduped_ordered)} ({dup_removed} duplicate rows dropped)")
+                            print(f"📋 Pending rows: {total_raw}, ready now: {ready_raw}, unique usernames: {len(deduped_ordered)} ({dup_removed} duplicate rows dropped)")
                             print(f"   Follow order: smallest source list first, then smallest followers_count (missing last)")
                             print(f"   Eligible for follow actions now: {len(usernames)}")
-                            print(f"   Skipped: {skipped_followed} already in followed.csv, {skipped_unfollowed} in unfollowed.csv")
+                            print(f"   Skipped: {skipped_followed} already in followed.csv, {skipped_unfollowed} in unfollowed.csv, {retry_waiting} waiting for retry")
                     except Exception as e:
                         print(f"⚠️ Error loading queue.json: {e}")
                         usernames = []
@@ -2923,7 +3592,8 @@ def main():
                 # 430 = ~370 organic gap + 60 bot headroom  (keeps following/followers ≤ ~1.3)
                 above_threshold = current_difference > 430
                 
-                if unfollow_limiter.can_perform() and not followed_not_unfollowed.empty:
+                should_unfollow = above_threshold or unfollow_only_mode
+                if should_unfollow and unfollow_limiter.can_perform() and not followed_not_unfollowed.empty:
                     # 3-day minimum before unfollowing (tighter cap → faster slot reclaim)
                     cutoff = datetime.now() - timedelta(days=3)
                     eligible_unfollows = followed_not_unfollowed[
@@ -2936,7 +3606,11 @@ def main():
                         
                         unfollow_result = unfollow_user(driver, username)
                         
-                        if unfollow_result == "follows_back":
+                        if unfollow_result == TRANSIENT_X_ERROR_RESULT:
+                            pause_for_transient_x_error(f"unfollowing @{username}")
+                            action_performed = True
+                            continue
+                        elif unfollow_result == "follows_back":
                             # User follows back - add to whitelist behavior (record in unfollowed to skip next time)
                             print(f"🛡️ @{username} follows back - marking as processed to avoid retry")
                             with open("unfollowed.csv", "a") as f:
@@ -2975,7 +3649,12 @@ def main():
                         print(f"🎯 Following: @{username} (difference: {current_difference}, pending: {len(usernames)})")
                         
                         follow_result = follow_user(driver, username, like_limiter)
-                        if follow_result and follow_result != "not_found":
+                        if follow_result == TRANSIENT_X_ERROR_RESULT:
+                            schedule_follow_retry(username, "x_transient_error", delay_hours=(1.5, 4))
+                            pause_for_transient_x_error(f"following @{username}")
+                            action_performed = True
+                            continue
+                        elif follow_result and follow_result != "not_found":
                             # Only record as successful follow if we actually followed (not skipped)
                             if follow_result == "skipped":
                                 print(f"⏭️ Skipped @{username} - adding to followed.csv to avoid rechecking")
@@ -3010,16 +3689,17 @@ def main():
                                 action_performed = True
                                 smart_break(recent_activity_count, base_minutes=2)
                         else:
-                            # Follow failed or page not found -- record in followed.csv
-                            # so the bot skips this user and moves to the next one
                             reason = "not found/suspended" if follow_result == "not_found" else "follow failed"
-                            print(f"⏭️ Skipping @{username} ({reason}) - adding to followed.csv to avoid retrying")
-                            new_entry = pd.DataFrame([[username, datetime.now()]], 
-                                                   columns=["username", "follow_timestamp"])
-                            followed_df = pd.concat([followed_df, new_entry], ignore_index=True)
-                            followed_df.to_csv("followed.csv", index=False)
-                            # Update queue.json status
-                            update_queue_status(username, "skipped", reason)
+                            if follow_result == "not_found":
+                                print(f"⏭️ Skipping @{username} ({reason}) - adding to followed.csv to avoid retrying")
+                                new_entry = pd.DataFrame([[username, datetime.now()]],
+                                                       columns=["username", "follow_timestamp"])
+                                followed_df = pd.concat([followed_df, new_entry], ignore_index=True)
+                                followed_df.to_csv("followed.csv", index=False)
+                                update_queue_status(username, "skipped", reason)
+                            else:
+                                retry_at = schedule_follow_retry(username, reason)
+                                print(f"🔁 @{username} follow failed; kept pending and scheduled retry at {retry_at}")
                             action_performed = False
 
                 # If no actions performed, take appropriate break

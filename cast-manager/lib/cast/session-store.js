@@ -5,7 +5,7 @@ function createSessionStore() {
 
   function create(input) {
     active = {
-      sessionId: `cast_${crypto.randomBytes(8).toString('hex')}`,
+      sessionId: input.sessionId || `cast_${crypto.randomBytes(8).toString('hex')}`,
       provider: input.provider,
       deviceId: input.deviceId,
       deviceName: input.deviceName || '',

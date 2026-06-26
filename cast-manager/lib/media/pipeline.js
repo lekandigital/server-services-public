@@ -6,8 +6,9 @@ function normalizeMode(value) {
   const raw = String(value || 'auto').toLowerCase().trim();
   if (!raw || raw === 'automatic') return 'auto';
   if (['compat', 'compatibility', 'hls', 'safe'].includes(raw)) return 'hls';
-  if (['force-full', 'full', 'full-transcode'].includes(raw)) return 'full-transcode';
-  if (['direct', 'direct-only'].includes(raw)) return 'direct';
+  if (['force-full', 'full', 'full-transcode', 'pretranscode'].includes(raw)) return 'full-transcode';
+  if (['direct', 'direct-only', 'simple-direct', 'simple'].includes(raw)) return 'direct';
+  if (['ffmpeg-live', 'ffmpeg', 'live'].includes(raw)) return 'ffmpeg-live';
   if (['vlc', 'vlc-like'].includes(raw)) return 'vlc';
   return 'auto';
 }
@@ -26,6 +27,7 @@ function isDirectSafe(analysis) {
 function choosePipelineMode({ analysis, target, requestedMode }) {
   const mode = normalizeMode(requestedMode);
   if (mode === 'vlc') return 'vlc';
+  if (mode === 'ffmpeg-live') return 'ffmpeg-live';
   if (mode === 'full-transcode') return 'hls-full-transcode';
   if (mode === 'hls') {
     return analysis?.playbackMode === 'full-transcode' ? 'hls-full-transcode' : 'hls-audio-transcode';
@@ -67,12 +69,16 @@ async function prepareMediaForCast({
   getMimeType = () => 'application/octet-stream',
   sshExec,
   createVlcJob,
+  createLiveFfmpegJob,
+  skipAnalysis = false,
   logger = () => {},
 } = {}) {
   if (!filePath) throw new Error('filePath required');
   const targetName = target === 'airplay' ? 'airplay' : 'chromecast';
   const requestedMode = normalizeMode(mode);
-  const analysis = await analyzeMediaCompatibility(filePath, targetName, { autoTranscode }, { sshExec });
+  const analysis = skipAnalysis
+    ? { container: path.extname(filePath).slice(1), playbackMode: 'direct', reasons: ['simple-direct skip analysis'] }
+    : await analyzeMediaCompatibility(filePath, targetName, { autoTranscode }, { sshExec });
   if (analysis.playbackMode === 'unsupported') {
     const err = new Error('Unsupported media for selected receiver');
     err.status = 415;
@@ -136,6 +142,21 @@ async function prepareMediaForCast({
       mimeType: 'video/mp2t',
       receiverSeek: false,
       vlcJob: job,
+    };
+  }
+
+  if (pipelineMode === 'ffmpeg-live') {
+    if (typeof createLiveFfmpegJob !== 'function') throw new Error('FFmpeg live backend is unavailable in this process');
+    const job = await createLiveFfmpegJob({ req, filePath, analysis, startSeconds, title });
+    return {
+      ...basePrepared,
+      backend: 'ffmpeg-live',
+      pipelineMode: 'ffmpeg-live-fmp4',
+      streamUrl: job.streamUrl,
+      jobId: job.jobId,
+      mimeType: 'video/mp4',
+      receiverSeek: false,
+      liveJob: job,
     };
   }
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=Cast Manager v3 - Torrent & Chromecast Management
+Description=File Manager - Files, Media, Casting, and Integrated Drive
 After=network-online.target
 Wants=network-online.target
 
@@ -7,11 +7,15 @@ Wants=network-online.target
 Type=simple
 User=__USER__
 Group=__USER__
-WorkingDirectory=__INSTALL_DIR__/cast-manager
+WorkingDirectory=/home/__USER__/cast_manager_v3
 Environment=NODE_ENV=production
 Environment=PORT=8004
+Environment=PUBLIC_URL=http://REDACTED_SERVER_IP:8004
+Environment=CAST_PUBLIC_BASE_URL=http://REDACTED_SERVER_IP:8004
+Environment=FILE_MANAGER_LIBRARY=/home/__USER__/file-manager/drive
+Environment=FILE_MANAGER_MAX_UPLOAD_MB=4096
+Environment=FILE_MANAGER_TEXT_PREVIEW_MB=2
 Environment=PATH=/home/__USER__/.nvm/versions/node/v20.20.0/bin:/home/__USER__/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-ExecStartPre=/bin/mkdir -p /tmp/cast_uploads
 ExecStart=/home/__USER__/.nvm/versions/node/v20.20.0/bin/node server.js
 Restart=always
 RestartSec=5
