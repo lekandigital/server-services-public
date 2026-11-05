@@ -1,5 +1,15 @@
 [
   {
+    "name": "Server Drive",
+    "description": "Whole filesystem as a Finder drive — smb://o@HOST/Server",
+    "id": "server-drive",
+    "port": 445,
+    "badge": "smb://",
+    "clickable": false,
+    "icon": "💾",
+    "color": "#2ea043"
+  },
+  {
     "name": "Server Portal",
     "description": "This page — directory of all services",
     "id": "server-portal",
@@ -28,6 +38,13 @@
     "port": 8004,
     "icon": "📁",
     "color": "#f0883e"
+  },
+  {
+    "name": "Sync Drive",
+    "description": "Finder-style file sync to /home/REDACTED_USER/file-manager/drive",
+    "port": 8384,
+    "icon": "🔁",
+    "color": "#58a6ff"
   },
   {
     "name": "Whisper Transcriber",

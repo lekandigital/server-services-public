@@ -20,6 +20,13 @@ function safeRemoteName(value) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '');
 }
 
+// `-re` only removes surplus speed; an encoder that is already slower than realtime is
+// unaffected. Escape hatch in case a source ever needs to outrun playback.
+function throttleReads() {
+  const raw = String(process.env.CAST_HLS_THROTTLE ?? '1').toLowerCase().trim();
+  return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
+}
+
 function buildHlsFfmpegCommand({ filePath, analysis, jobDir, startSeconds = 0, mode = 'auto', encoder = 'libx264' }) {
   const playbackMode = analysis?.playbackMode || mode || 'audio-transcode';
   const videoCodec = String(analysis?.videoCodec || '').toLowerCase();
@@ -31,6 +38,12 @@ function buildHlsFfmpegCommand({ filePath, analysis, jobDir, startSeconds = 0, m
   const args = [
     'ffmpeg -hide_banner -nostdin -loglevel info',
     '-fflags +genpts',
+    // Unthrottled, ffmpeg finishes a 70-minute file in about a minute. The playlist is
+    // still growing (no EXT-X-ENDLIST), so the receiver treats it as live and joins ~3
+    // target durations from the END — i.e. deep into the movie, at a position that
+    // varies with how fast the TV connects. Reading at native rate keeps the live edge
+    // next to the playhead, so a live-edge join lands at the start instead.
+    throttleReads() ? '-re' : '',
     ss > 0 ? `-ss ${ss}` : '',
     `-i ${shEsc(filePath)}`,
     hasVideo ? `-map 0:${analysis.videoStreamIndex}` : '-vn',
@@ -71,7 +84,7 @@ function buildHlsFfmpegCommand({ filePath, analysis, jobDir, startSeconds = 0, m
   args.push(`-hls_segment_filename ${shEsc(path.posix.join(jobDir, 'segment_%05d.ts'))}`);
   args.push(shEsc(path.posix.join(jobDir, 'master.m3u8')));
 
-  return args.join(' ').replace(/\s+/g, ' ').trim();
+  return args.join(' ').trim();
 }
 
 function summarizeAnalysis(analysis) {
@@ -226,10 +239,19 @@ function createHlsJobManager({ sshExec, sshConfig, cfg = {}, resolveEncoder = as
       return `${segmentBase}${encodeURIComponent(path.posix.basename(trimmed))}`;
     }).join('\n');
 
+    // While the encode is in flight the playlist has no EXT-X-ENDLIST, so the receiver
+    // reads it as live and would otherwise start near the end (RFC 8216 6.3.3). The
+    // playlist already begins at the requested position — ffmpeg was given -ss — so
+    // pin playback to offset 0 within it rather than to the live edge.
+    const withStart = rewritten.replace(
+      /^(#EXTM3U[^\n]*\n)/,
+      '$1#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n',
+    );
+
     res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    return res.send(`${rewritten}\n`);
+    return res.send(`${withStart}\n`);
   }
 
   async function serveSegment(res, jobId, segmentName) {

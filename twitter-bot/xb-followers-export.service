@@ -1,0 +1,35 @@
+[Unit]
+Description=X followers-list export + followback reconcile
+Documentation=file://__INSTALL_DIR__/twitter-bot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+Group=__USER__
+# Every data path in this codebase is relative to cwd (DATA_DIR="."), so this must be
+# the dir the bot and dashboard actually run in. run_bot.sh and run_dashboard.sh both
+# cd to ~/xb; confirm with `systemctl show -p WorkingDirectory xb-dashboard` before
+# trusting this. The exporter refuses to run if there is no queue.json here.
+WorkingDirectory=/home/__USER__/xb
+# --full every run, deliberately. Incremental exists for a tight request budget, and
+# this endpoint turned out to allow 1000 requests per 15 minutes against a list that
+# pages in 10 — so a complete re-read costs ~0.25% of the daily budget and buys exact
+# arrival *and* departure detection, which an incremental run cannot give: it stops
+# early, so a follower missing from it proves nothing.
+ExecStart=/usr/bin/python3 -u /home/__USER__/xb/x_followers_export.py --run --full
+# Exit 2 is a deliberate partial: the run hit its pacing or runtime budget, checkpointed
+# the cursor and stopped so the next timer firing can resume. Not a failure.
+SuccessExitStatus=2
+RuntimeMaxSec=4h
+# The bot's Selenium session is the latency-sensitive thing on this box; the export is
+# not. Let it lose every scheduling contest.
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=xb-followers-export
+
+[Install]
+WantedBy=multi-user.target

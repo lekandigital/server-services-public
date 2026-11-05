@@ -86,7 +86,8 @@ function escCmd(str) {
 }
 
 const app = express();
-const upload = multer({ dest: '/tmp/cast_uploads/' });
+const os = require('os');
+const upload = multer({ dest: os.tmpdir() });
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -1479,7 +1480,7 @@ function buildLiveFfmpegCmd({ filePath, analysis, startSeconds = 0, teePath, ful
     : '';
 
   const tail = [cudaHw, inputTiming, ss, `-i ${input}`, subtitleInput, mapVideo, mapAudio, codecs, audioTiming, mov, outputTiming, out].filter(Boolean).join(' ');
-  const base = `ffmpeg -hide_banner -loglevel warning ${re} ${tail}`.replace(/\s+/g, ' ').trim();
+  const base = `ffmpeg -hide_banner -loglevel warning ${re} ${tail}`.trim();
   if (teePath) {
     const finalPath = String(teePath);
     const tmpPath = `${finalPath}.part`;
@@ -2181,6 +2182,26 @@ app.get('/api/torrents', async (req, res) => {
     const lines = stdout.split('\n');
     if (lines.length < 2) return res.json({ torrents: [], stats: {} });
 
+    // Fetch bandwidth priority for all torrents in one batched call (cheap, ~ms).
+    // The `-l` output does not include priority, so we map id -> priority here.
+    const priorityById = {};
+    const addedDateById = {};
+    try {
+      const { stdout: pinfo } = await trCmd('-t all -i');
+      let curId = null;
+      for (const ln of pinfo.split('\n')) {
+        const idm = ln.match(/^\s*Id:\s*(\d+)/);
+        if (idm) { curId = parseInt(idm[1]); continue; }
+        const pm = ln.match(/Bandwidth Priority:\s*(\w+)/i);
+        if (pm && curId != null) priorityById[curId] = pm[1].toLowerCase(); // high|normal|low
+        const am = ln.match(/Date added:\s+(.+)/i);
+        if (am && curId != null) {
+          const t = Date.parse(am[1].trim());
+          if (!isNaN(t)) addedDateById[curId] = t;
+        }
+      }
+    } catch (_) { /* non-fatal: priority just won't be shown */ }
+
     const torrents = [];
     // skip header and summary line
     for (let i = 1; i < lines.length - 1; i++) {
@@ -2192,16 +2213,35 @@ app.get('/api/torrents', async (req, res) => {
         /^\s*(\d+)\*?\s+([\d.]+%|n\/a)\s+(.+?)\s{2,}(.+?)\s{2,}([\d.]+)\s+([\d.]+)\s+([\d.]+|None)\s+(.+?)\s{2,}(.+)$/
       );
       if (match) {
+        const rawStatus = match[8].trim();
+        const sl = rawStatus.toLowerCase();
+        // Normalize transmission status into the contract the frontend expects
+        const progress = (parseFloat(match[2]) || 0) / 100;            // 0..1
+        let status = 'idle';
+        if (sl === 'stopped' || sl === 'finished') status = 'stopped';
+        else if (sl.includes('queue')) status = 'queued';
+        else if (sl === 'verifying') status = 'downloading';
+        // 'Up & Down' / actively transferring: classify by completion
+        else if (sl.includes('down') || sl === 'up & down') status = progress >= 1 ? 'seeding' : 'downloading';
+        else if (sl.includes('seed') || sl === 'uploading' || sl === 'idle') status = progress >= 1 ? 'seeding' : 'idle';
+        const downloadSpeed = (parseFloat(match[6]) || 0) * 1000;       // KB/s -> bytes/s
+        const uploadSpeed = (parseFloat(match[5]) || 0) * 1000;
+        const ratioNum = parseFloat(match[7]);
         torrents.push({
           id: parseInt(match[1]),
+          name: match[9].trim(),
+          status,
+          progress,
+          downloadSpeed,
+          uploadSpeed,
+          eta: match[4].trim(),
+          addedDate: addedDateById[parseInt(match[1])] || 0,
+          ratio: isNaN(ratioNum) ? 0 : ratioNum,
+          priority: priorityById[parseInt(match[1])] || 'normal',
+          // raw fields kept for debugging / backward compat
           done: match[2],
           have: match[3],
-          eta: match[4],
-          up: match[5],
-          down: match[6],
-          ratio: match[7],
-          status: match[8],
-          name: match[9].trim(),
+          rawStatus,
         });
       }
     }
@@ -2293,8 +2333,9 @@ app.delete('/api/torrents/:id', async (req, res) => {
 app.post('/api/torrents/:id/priority', async (req, res) => {
   try {
     const { priority } = req.body; // high, normal, low
-    const flag = priority === 'high' ? '-ph' : priority === 'low' ? '-pl' : '-pn';
-    await trCmd(`-t ${req.params.id} -Bh ${flag}`);
+    // bandwidth priority (torrent-level): -Bh / -Bn / -Bl. NOT the -p* file flags.
+    const flag = priority === 'high' ? '-Bh' : priority === 'low' ? '-Bl' : '-Bn';
+    await trCmd(`-t ${req.params.id} ${flag}`);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3572,6 +3613,13 @@ app.get('/api/cast/status', async (req, res) => {
     });
   }
   const updated = castSessions.get();
+  // Stopping or replacing a cast clears the session, and that can land while the
+  // receiver-status await above is still in flight. Without this guard the next
+  // property read throws and takes the whole service down.
+  if (!updated) {
+    const status = await getNormalizedCastStatus();
+    return res.json({ success: status.success !== false, ...status });
+  }
   const currentTime = appClock
     ? estimateSessionTime(updated, updated.state || state)
     : (usableReceiverTime ? receiverTime : Number(updated.lastKnownTime || 0));

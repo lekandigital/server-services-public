@@ -1,6 +1,6 @@
 # Cast Reliability Worklog
 
-Handoff reference: `/Users/lekan/Dev/misccomputerthings/RECEIVER_ANDROID_TV_RELIABILITY_HANDOFF.md`  
+Handoff reference: `/Users/REDACTED_USER/Dev/misccomputerthings/RECEIVER_ANDROID_TV_RELIABILITY_HANDOFF.md`  
 (Cast Manager uses Ubuntu SSH + USB ADB to NVIDIA Chromecast / Android TV.)
 
 ## Session baseline
@@ -82,5 +82,5 @@ E2E evidence (2026-06-15): diagnostics show REDACTED_DEVICE requested stream URL
 
 ## Handoff doc
 
-Use `/Users/lekan/Dev/misccomputerthings/RECEIVER_ANDROID_TV_RELIABILITY_HANDOFF.md` for Android TV context.  
+Use `/Users/REDACTED_USER/Dev/misccomputerthings/RECEIVER_ANDROID_TV_RELIABILITY_HANDOFF.md` for Android TV context.  
 Cast testing: SSH to Ubuntu → USB ADB serial `14291HFDD2RTE3` (auto-detected when `CAST_ADB_SERIAL` unset).

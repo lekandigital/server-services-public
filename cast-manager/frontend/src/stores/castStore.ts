@@ -50,6 +50,11 @@ export const useCastStore = defineStore('cast', {
     },
     currentTime(state): number {
       if (state.scrubDragging) return state.scrubValue
+      // Hold the handle at the requested position while a seek/restart is in
+      // flight. HLS/transcode seeks re-encode from the offset and can take
+      // several seconds; without this the handle snaps back to the stale
+      // receiver position and looks like seeking "didn't work".
+      if (state.seekInFlight) return state.scrubValue
       return state.status?.currentTime ?? 0
     },
     duration(state): number {
@@ -175,9 +180,11 @@ export const useCastStore = defineStore('cast', {
           await new Promise((resolve) => setTimeout(resolve, 350))
         }
       } finally {
+        // Refresh status (new position) before dropping the pin so currentTime
+        // transitions target -> receiver position without a snap-back flicker.
+        await this.pollStatus()
         this.seekInFlight = false
         this.scrubDragging = false
-        await this.pollStatus()
       }
     },
     async loadDoctor() {

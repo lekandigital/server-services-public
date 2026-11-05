@@ -123,6 +123,8 @@ export interface TorrentItem {
   ratio?: number
   sizeWhenDone?: number
   downloadedEver?: number
+  addedDate?: number
+  priority?: string
 }
 
 export interface RecentEntry {

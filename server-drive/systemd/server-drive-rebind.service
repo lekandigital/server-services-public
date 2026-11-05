@@ -1,0 +1,11 @@
+[Unit]
+Description=Rebind Server Drive smbd when an interface address appears
+Documentation=file://__INSTALL_DIR__/server-drive/README.md
+After=smbd.service
+Wants=smbd.service
+
+[Service]
+Type=oneshot
+ExecStart=__INSTALL_DIR__/server-drive/rebind-check.sh
+StandardOutput=journal
+StandardError=journal

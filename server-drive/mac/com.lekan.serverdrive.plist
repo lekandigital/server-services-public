@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Server Drive — auto-mount LaunchAgent.
+  Installed to ~/Library/LaunchAgents/ by setup-server-drive-mac.sh, which
+  substitutes __SUPPORT_DIR__ and __LOG_FILE__.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lekan.serverdrive</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__SUPPORT_DIR__/server-drive-mount.sh</string>
+    </array>
+
+    <!-- Mount at login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Re-fires when the network configuration changes: joining Wi-Fi,
+         waking from sleep, switching networks. -->
+    <key>WatchPaths</key>
+    <array>
+        <string>/Library/Preferences/SystemConfiguration</string>
+    </array>
+
+    <!-- Backstop for anything the WatchPaths trigger misses, e.g. a dropped
+         session after "Server connection interrupted". Cheap when mounted:
+         one `mount | grep`. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <!-- Needs the Aqua session: Finder does the mounting, and the Keychain
+         must be unlocked. -->
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <key>StandardOutPath</key>
+    <string>__LOG_FILE__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_FILE__</string>
+</dict>
+</plist>

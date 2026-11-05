@@ -35,6 +35,10 @@ USER_NAME="$1"
 INSTALL_DIR="$2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CAST_MANAGER_DIR="/home/${USER_NAME}/cast_manager_v3"
+SYNC_DRIVE_CONFIG_DIR="/home/REDACTED_USER/syncthing/config"
+SYNC_DRIVE_DATA_DIR="/home/REDACTED_USER/file-manager/drive"
+SYNC_DRIVE_CONFIG_ROOT="/home/REDACTED_USER/syncthing"
+SYNC_DRIVE_DATA_ROOT="/home/REDACTED_USER/file-manager"
 
 echo -e "${BLUE}==========================================${NC}"
 echo -e "${BLUE}  Server Services — Full Stack Deploy${NC}"
@@ -89,7 +93,7 @@ mkdir -p "$INSTALL_DIR"
 if [ "$(readlink -f "$SCRIPT_DIR")" = "$(readlink -f "$INSTALL_DIR")" ]; then
     echo -e "  ${BLUE}→ Source and install directories match; keeping the checkout in place${NC}"
 else
-    cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,whisper-transcriber,ocr-engine,system-stats,ollama-gui,image-studio,xbot-portal,vpn-portal} "$INSTALL_DIR/"
+    cp -r "$SCRIPT_DIR"/{server-portal,twitter-bot,whisper-transcriber,ocr-engine,system-stats,ollama-gui,image-studio,xbot-portal,vpn-portal,sync-drive} "$INSTALL_DIR/"
     chown -R "$USER_NAME:$USER_NAME" "$INSTALL_DIR"
 fi
 install -d -m 0755 -o "$USER_NAME" -g "$USER_NAME" "/home/${USER_NAME}/file-manager"
@@ -133,8 +137,50 @@ echo -e "${GREEN}  ✓ Cast Manager + Drive syntax verified${NC}"
 # ----------------------------------------------------------
 echo -e "${YELLOW}[5/7] Building Ollama GUI Docker containers...${NC}"
 cd "$INSTALL_DIR/ollama-gui"
-docker compose up -d --build
+if docker compose version >/dev/null 2>&1; then
+    docker compose up -d --build
+else
+    su - "$USER_NAME" -c "cd '$INSTALL_DIR/ollama-gui' && docker compose up -d --build"
+fi
 echo -e "${GREEN}  ✓ Ollama GUI running (Docker)${NC}"
+
+# ----------------------------------------------------------
+# 5b. Deploy Sync Drive (Docker)
+# ----------------------------------------------------------
+echo -e "${YELLOW}[5b/7] Starting Sync Drive Docker container...${NC}"
+if [ "$USER_NAME" != "o" ]; then
+    echo -e "  ${YELLOW}Sync Drive is configured for canonical storage at /home/REDACTED_USER/file-manager/drive.${NC}"
+    echo -e "  ${YELLOW}Deploy user is ${USER_NAME}; keeping the required /home/REDACTED_USER path for this service.${NC}"
+fi
+mkdir -p "$SYNC_DRIVE_CONFIG_DIR" "$SYNC_DRIVE_DATA_DIR"
+chown -R "$USER_NAME:$USER_NAME" "$SYNC_DRIVE_CONFIG_ROOT"
+chown -R "$USER_NAME:$USER_NAME" "$SYNC_DRIVE_DATA_ROOT"
+cd "$INSTALL_DIR/sync-drive"
+if docker compose version >/dev/null 2>&1; then
+    docker compose up -d
+else
+    su - "$USER_NAME" -c "cd '$INSTALL_DIR/sync-drive' && docker compose up -d"
+fi
+echo -e "${GREEN}  ✓ Sync Drive running (Docker)${NC}"
+
+# ----------------------------------------------------------
+# 5c. Deploy Server Drive (Samba/SMB → macOS Finder)
+# ----------------------------------------------------------
+echo -e "${YELLOW}[5c/7] Setting up Server Drive (SMB)...${NC}"
+if [ -x "$INSTALL_DIR/server-drive/setup-server-drive.sh" ]; then
+    # Idempotent: skips the password prompt if the Samba user already exists.
+    if "$INSTALL_DIR/server-drive/setup-server-drive.sh" "$USER_NAME"; then
+        # Deliberately not `hostname -I` — that lists the VPN address first when
+        # a tunnel is up, and the share is not reachable there.
+        _lan_if="$(ip route show default | awk '/default/ {print $5; exit}')"
+        SERVER_DRIVE_IP="$(ip -o -f inet addr show "$_lan_if" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+        echo -e "${GREEN}  ✓ Server Drive running (smb://${USER_NAME}@${SERVER_DRIVE_IP}/Server)${NC}"
+    else
+        echo -e "  ${RED}✗ Server Drive setup failed — run server-drive/check-server-drive.sh${NC}"
+    fi
+else
+    echo -e "  ${YELLOW}Skipped — server-drive/setup-server-drive.sh not found${NC}"
+fi
 
 # ----------------------------------------------------------
 # 6. Install systemd service files
@@ -150,6 +196,14 @@ declare -A SERVICE_FILES=(
     ["image-studio"]="image-studio/image-studio.service"
     ["xbot-lan-dashboard"]="xbot-portal/xbot-lan-dashboard.service"
     ["proton-vpn-portal"]="vpn-portal/proton-vpn-portal.service"
+    ["xb-followers-export"]="twitter-bot/xb-followers-export.service"
+)
+
+# Timer-driven units. Their .service is a oneshot installed above but deliberately left
+# out of the enable/restart loop below: restarting a oneshot runs it, and a deploy must
+# not kick off a real followers export.
+declare -A TIMER_FILES=(
+    ["xb-followers-export"]="twitter-bot/xb-followers-export.timer"
 )
 
 for svc_name in "${!SERVICE_FILES[@]}"; do
@@ -168,6 +222,17 @@ sed -e "s|__USER__|${USER_NAME}|g" \
     "$CAST_MANAGER_DIR/cast-manager.service" > /etc/systemd/system/cast-manager.service
 echo -e "  ${BLUE}→ cast-manager.service${NC}"
 
+for tmr_name in "${!TIMER_FILES[@]}"; do
+    src="$INSTALL_DIR/${TIMER_FILES[$tmr_name]}"
+    dest="/etc/systemd/system/${tmr_name}.timer"
+
+    sed -e "s|__USER__|${USER_NAME}|g" \
+        -e "s|__INSTALL_DIR__|${INSTALL_DIR}|g" \
+        "$src" > "$dest"
+
+    echo -e "  ${BLUE}→ ${tmr_name}.timer${NC}"
+done
+
 systemctl daemon-reload
 echo -e "${GREEN}  ✓ Systemd services installed${NC}"
 
@@ -181,6 +246,15 @@ for svc_name in server-portal xb-dashboard faster-whisper paddleocr system-stats
     systemctl restart "$svc_name" 2>/dev/null && \
         echo -e "  ${GREEN}✓ ${svc_name}${NC}" || \
         echo -e "  ${RED}✗ ${svc_name} (failed to start — check: journalctl -u ${svc_name})${NC}"
+done
+
+# Timers, not services: enabling the timer is what schedules the oneshot. Never
+# `restart` these — that would run an export on every deploy.
+for tmr_name in "${!TIMER_FILES[@]}"; do
+    systemctl enable "${tmr_name}.timer" 2>/dev/null
+    systemctl start "${tmr_name}.timer" 2>/dev/null && \
+        echo -e "  ${GREEN}✓ ${tmr_name}.timer${NC}" || \
+        echo -e "  ${RED}✗ ${tmr_name}.timer (check: systemctl status ${tmr_name}.timer)${NC}"
 done
 
 # Port 8004 belongs to the combined Cast Manager process. Stop the obsolete
@@ -222,6 +296,8 @@ echo -e "  🖼️  ML Image Studio:     http://$(hostname -I | awk '{print $1}'
 echo -e "  📡 X-Bot Portal:         http://$(hostname -I | awk '{print $1}'):8009"
 echo -e "  🎥 VLC Stream:           :8010 (directory indicator only)"
 echo -e "  🔐 Proton VPN Portal:    http://$(hostname -I | awk '{print $1}'):8011"
+echo -e "  🔁 Sync Drive:           http://$(hostname -I | awk '{print $1}'):8384"
+echo -e "  💾 Server Drive:         smb://${USER_NAME}@${SERVER_DRIVE_IP:-$(hostname -I | awk '{print $1}')}/Server"
 echo ""
 echo -e "  Check status: ${YELLOW}sudo systemctl status server-portal xb-dashboard faster-whisper paddleocr system-stats image-studio xbot-lan-dashboard proton-vpn-portal cast-manager${NC}"
 echo -e "  View logs:    ${YELLOW}journalctl -u <service-name> -f${NC}"

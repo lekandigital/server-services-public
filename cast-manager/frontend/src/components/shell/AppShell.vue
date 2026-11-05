@@ -4,6 +4,7 @@ import SidebarNav from './SidebarNav.vue'
 import TopBar from './TopBar.vue'
 import ToastHost from '../common/ToastHost.vue'
 import UploadOverlay from '../common/UploadOverlay.vue'
+import SudoPasswordModal from '../common/SudoPasswordModal.vue'
 import DiagnosticsDrawer from '../diagnostics/DiagnosticsDrawer.vue'
 import NowPlayingBar from '../cast/NowPlayingBar.vue'
 import DashboardView from '../dashboard/DashboardView.vue'
@@ -121,6 +122,7 @@ async function onGlobalDrop(event: DragEvent) {
       <NowPlayingBar v-if="cast.showNowPlaying" />
     </div>
     <ToastHost />
+    <SudoPasswordModal />
     <DiagnosticsDrawer v-if="app.diagnosticsOpen" />
     <MediaPreviewPanel v-if="library.previewOpen" />
     <CastPanel v-if="library.castPanelOpen" />

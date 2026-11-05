@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { fetchConfig, listFiles, listAnyFiles, searchFiles, starFile, unstarFile, mkdir, DEFAULT_MEDIA_ROOT, DEFAULT_ROOTS } from '../api/files'
+import { withSudoRetry } from '../api/sudo'
 import { inferFileKind } from '../utils/files'
 import {
   appUrlForServerPath,
@@ -356,7 +357,7 @@ export const useLibraryStore = defineStore('library', {
       }
     },
     async createFolder(name: string) {
-      await mkdir(this.currentPath, name)
+      await withSudoRetry((pwd) => mkdir(this.currentPath, name, pwd), { title: 'New folder needs permission' })
       await this.load()
     },
     openCastPanel(file?: FileEntry) {

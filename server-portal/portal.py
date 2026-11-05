@@ -27,6 +27,7 @@ HOST_IP = "REDACTED_SERVER_IP"
 
 # Map port -> systemd service name for services we can toggle
 SERVICE_MAP = {
+    445: "smbd",
     8001: "server-portal",
     8002: "ollama",
     8003: "xb-dashboard",
@@ -54,6 +55,16 @@ SUDO_AUTH_FAILURE_MARKERS = (
 )
 
 DEFAULT_SERVICES = [
+    {
+        "name": "Server Drive",
+        "description": "Whole filesystem as a Finder drive — smb://o@HOST/Server",
+        "id": "server-drive",
+        "port": 445,
+        "badge": "smb://",
+        "clickable": False,
+        "icon": "\U0001f4be",
+        "color": "#2ea043"
+    },
     {
         "name": "Server Portal",
         "description": "This page \u2014 directory of all services",
@@ -502,7 +513,7 @@ h1{{font-size:28px;font-weight:700;font-family:'SF Mono',SFMono-Regular,Consolas
 .toast.success{{border-color:var(--green)}}
 .toast.error{{border-color:var(--red)}}
 </style></head><body>
-<h1>{HOST_IP}</h1>
+<h1 id="host-title">{HOST_IP}</h1>
 <div class="subtitle">Local Services</div>
 <div class="grid" id="grid"></div>
 <button class="add-btn" onclick="openModal()" title="Add service">+</button>
@@ -537,7 +548,12 @@ h1{{font-size:28px;font-weight:700;font-family:'SF Mono',SFMono-Regular,Consolas
 </div>
 
 <script>
-const HOST='{HOST_IP}';
+// Canonical LAN IP (used only to recognize/rewrite the box's own links).
+const CANONICAL_HOST='{HOST_IP}';
+// Always link against whatever host you're actually browsing from, so the
+// portal works identically over the LAN IP, the Tailscale IP, or MagicDNS.
+const HOST=window.location.hostname || CANONICAL_HOST;
+(function(){{ const h=document.getElementById('host-title'); if(h) h.textContent=HOST; }})();
 let services=[];
 let serviceMap={{}};
 let statusCache={{}};
@@ -564,7 +580,19 @@ function safeColor(value) {{
 }}
 
 function serviceUrl(s) {{
-  return s.url || `http://${{HOST}}:${{s.port}}/`;
+  // Rewrite the host of the box's own links to the current browsing host so
+  // they follow you across LAN / Tailscale; leave genuinely external URLs alone.
+  const localHosts = [CANONICAL_HOST, 'localhost', '127.0.0.1'];
+  if (s.url) {{
+    try {{
+      const u = new URL(s.url);
+      if (localHosts.includes(u.hostname)) {{
+        return `${{location.protocol}}//${{HOST}}:${{u.port || s.port}}${{u.pathname}}${{u.search}}`;
+      }}
+      return s.url;
+    }} catch (e) {{ /* malformed url: fall back to default below */ }}
+  }}
+  return `${{location.protocol}}//${{HOST}}:${{s.port}}/`;
 }}
 
 function statusPort(s) {{

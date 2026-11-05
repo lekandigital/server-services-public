@@ -11,6 +11,13 @@ __pycache__/
 uploads/
 results/
 
+# Sync Drive local/runtime data
+/sync-drive/config/
+/sync-drive/data/
+/syncthing/
+/file-manager/drive/
+/Server Drive/
+
 # Node
 node_modules/
 
@@ -31,6 +38,16 @@ daily_counts.json
 cacheforlogin.json
 input.csv
 data.lock
+
+# Followers exporter runtime data (x_export_cookies.txt is a live X session)
+x_export_cookies.txt
+followers_state.json
+followers_cursor.json
+followers_export_status.json
+followback_ledger.jsonl
+followback_ledger.preview.jsonl
+followers_export.lock
+followers_snapshots/
 debug/
 importcsv/
 

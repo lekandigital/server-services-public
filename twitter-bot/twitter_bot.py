@@ -15,6 +15,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 import os
 import json
 import csv
+import re
 import socket
 import subprocess
 from urllib.parse import urlparse
@@ -22,7 +23,15 @@ from urllib3.exceptions import MaxRetryError
 from urllib.error import URLError
 import sys
 
-from queue_dedupe import dedupe_best_pending
+from queue_dedupe import (
+    dedupe_best_pending,
+    effective_ranks,
+    entry_rank_tuple,
+    load_list_priority,
+    pending_source_sizes,
+)
+from queue_store import queue_transaction
+from twitter_csv import is_x_target
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -36,6 +45,20 @@ CONTINUOUS_RETRY_CSV = "continuous_follow_failed_candidates.csv"
 VPN_RATE_LIMIT_ENABLED = os.environ.get("VPN_RATE_LIMIT_ENABLED", "1").lower() not in ("0", "false", "no", "off")
 VPN_RATE_LIMIT_STATE = os.environ.get("VPN_RATE_LIMIT_STATE", "vpn_rate_limit_state.json")
 VPN_RATE_LIMIT_TEST_HOST = os.environ.get("VPN_RATE_LIMIT_TEST_HOST", "x.com")
+# A rotation drops one tunnel and brings another up; DNS/TCP both fail for a few
+# seconds afterwards, so egress is re-checked over this window before the result
+# is trusted.
+VPN_SETTLE_ATTEMPTS = 6
+VPN_SETTLE_DELAY_SECONDS = 10
+# Proton exits get flagged by X's edge often enough that rotating off a blocked
+# one has to be tried before waiting out what looks like a rate-limit.
+# The block is path-specific: an exit can serve the REST endpoints fine while
+# Cloudflare challenges every GraphQL call, so the probe has to hit the same
+# GraphQL path the bot depends on. Only the HTTP status matters here, so any
+# stable account id works as the subject.
+X_EDGE_PROBE_USER_ID = "12"
+X_EDGE_BLOCK_MARKERS = ("attention required", "cf-error-details", "cloudflare")
+VPN_BLOCK_ROTATE_ATTEMPTS = 4
 RESOLVED_USER_IDS_CACHE = os.environ.get("RESOLVED_USER_IDS_CACHE", "resolved_user_ids.json")
 X_USER_BY_REST_ID_URL = "https://x.com/i/api/graphql/xf3jd90KKBCUxdlI_tNHZw/UserByRestId"
 X_BEARER = "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
@@ -53,6 +76,11 @@ X_API_FEATURES = {
 }
 X_API_SESSION = None
 RESOLVED_USER_IDS = None
+
+# Session-scoped tracking so a single bad/suspended target or a total internet
+# outage can't wedge the bot into an infinite retry loop on the same account.
+SESSION_TRANSIENT_UNFOLLOW_SKIPS = set()
+TRANSIENT_UNFOLLOW_FAILS = {}
 
 try:
     VPN_RATE_LIMIT_COOLDOWN_SECONDS = int(os.environ.get("VPN_RATE_LIMIT_COOLDOWN_SECONDS", "1800"))
@@ -130,6 +158,109 @@ def dns_status(host):
 
 def vpn_dns_status():
     return dns_status(VPN_RATE_LIMIT_TEST_HOST)
+
+
+def internet_egress_ok(host=None, timeout=6):
+    """True only if the box can resolve DNS *and* open a TCP connection out.
+
+    This is the difference between a genuine X-side hiccup and a total
+    VPN/connectivity outage: when the Proton tunnel stops forwarding traffic,
+    every page load fails and X's generic 'Something went wrong' page looks
+    exactly like a rate-limit — but the fault is the tunnel, not X.
+    """
+    host = host or VPN_RATE_LIMIT_TEST_HOST
+    ok, _ = dns_status(host)
+    if not ok:
+        return False
+    try:
+        with socket.create_connection((host, 443), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def wait_for_egress_after_vpn_change(attempts=VPN_SETTLE_ATTEMPTS, delay=VPN_SETTLE_DELAY_SECONDS):
+    """True once egress works again after we rotated the VPN ourselves.
+
+    cycle_vpn_for_rate_limit() tears the active tunnel down before bringing a
+    different one up, so an egress check fired immediately afterwards always
+    fails — which made the bot mistake its own rotation for an X-side rate-limit
+    and idle for the full transient pause on a box that was actually fine.
+    """
+    for attempt in range(1, attempts + 1):
+        if internet_egress_ok():
+            return True
+        if attempt < attempts:
+            time.sleep(delay)
+    return False
+
+
+def x_edge_blocked():
+    """True if X's edge is refusing this exit IP outright with a Cloudflare challenge.
+
+    A blocked exit still passes internet_egress_ok(): DNS resolves and the TCP
+    handshake to x.com:443 succeeds, so an IP-level block reads as an
+    account-level rate-limit and the bot idles for the full transient pause on an
+    exit that was never going to work.
+
+    Any probe failure returns False, so this can only ever add a rotation — it
+    never suppresses the existing rate-limit handling.
+    """
+    session = x_api_session()
+    if session is None:
+        return False
+    try:
+        response = session.get(
+            X_USER_BY_REST_ID_URL,
+            params={
+                "variables": json.dumps({"userId": X_EDGE_PROBE_USER_ID, "withSafetyModeUserFields": True}),
+                "features": json.dumps(X_API_FEATURES),
+            },
+            timeout=15,
+        )
+    except Exception:
+        return False
+    if response.status_code == 200:
+        return False
+    body = (response.text or "").lower()
+    return any(marker in body for marker in X_EDGE_BLOCK_MARKERS)
+
+
+def rotate_off_blocked_exit(context):
+    """Rotate VPN exits until X's edge accepts one. True if we landed on a good exit."""
+    for attempt in range(1, VPN_BLOCK_ROTATE_ATTEMPTS + 1):
+        cycle_vpn_for_rate_limit(f"X edge blocked this exit while {context}", force=True)
+        if not wait_for_egress_after_vpn_change():
+            continue
+        if not x_edge_blocked():
+            print(f"✅ Landed on an exit X accepts after {attempt} rotation(s); "
+                  "retrying without the long pause.")
+            return True
+    return False
+
+
+def wait_for_internet_egress(max_wait_seconds=6 * 3600):
+    """Block until real internet egress returns, cycling the VPN on its cooldown.
+
+    Escalating backoff (capped at 15 min) so the bot resumes promptly once the
+    tunnel recovers instead of blindly sleeping for the full transient pause and
+    hammering the same target while the box has no connectivity at all.
+    """
+    waited = 0
+    delay = 60
+    while waited < max_wait_seconds:
+        if internet_egress_ok():
+            print(f"✅ Internet egress restored after {round(waited / 60, 1)} min.")
+            return True
+        # cycle_vpn_for_rate_limit has its own cooldown, so this won't thrash.
+        cycle_vpn_for_rate_limit("waiting for internet egress to recover")
+        print(f"⏳ Still no internet egress; re-checking in {round(delay / 60, 1)} min "
+              f"(waited {round(waited / 60, 1)} min so far).")
+        time.sleep(delay)
+        waited += delay
+        delay = min(delay * 2, 15 * 60)
+    print(f"⚠️ Internet egress still down after {round(max_wait_seconds / 3600, 1)}h; resuming retries anyway.")
+    return False
 
 
 def load_vpn_rate_limit_state():
@@ -261,11 +392,34 @@ def page_has_transient_x_error(driver):
 
 
 def pause_for_transient_x_error(context):
+    """Handle X's 'Something went wrong' page.
+
+    Returns True if the real cause was a VPN/connectivity outage (the target is
+    blameless — don't count it against that account), False if it looks like a
+    genuine X-side transient/rate-limit condition.
+    """
+    egress_ok = internet_egress_ok()
     cycle_vpn_for_rate_limit(f"transient X error while {context}")
+    if not egress_ok:
+        print(f"🚫 No internet egress while {context} — this is a VPN/connectivity outage, not an X rate-limit.")
+        wait_for_internet_egress()
+        return True
+    if not wait_for_egress_after_vpn_change():
+        print(f"🚫 Internet egress did not come back after rotating the VPN while {context} — "
+              "treating it as a connectivity outage, not an X rate-limit.")
+        wait_for_internet_egress()
+        return True
+    if x_edge_blocked():
+        print(f"🚫 X's edge is blocking this VPN exit IP while {context} — "
+              "rotating exits instead of waiting out a rate-limit that isn't one.")
+        if rotate_off_blocked_exit(context):
+            return True
+        print("⚠️ Every exit tried is still blocked by X's edge; falling back to the transient pause.")
     wait_seconds = random.uniform(*TRANSIENT_X_ERROR_PAUSE_SECONDS)
     print(f"⏸️ X showed 'Something went wrong' while {context}. Treating it as a transient/rate-limit condition.")
     print(f"⏳ Pausing for {round(wait_seconds / 60, 1)} min; pending follow retries stay queued for later.")
     time.sleep(wait_seconds)
+    return False
 
 
 def append_retry_result(entry, username, new_status, skip_reason=None):
@@ -395,33 +549,178 @@ def schedule_follow_retry(username, reason, delay_hours=(2, 6)):
         print(f"⚠️ Error scheduling retry for @{username}: {e}")
         return None
 
+def _primary_queue_row(queue, matches, new_status):
+    """Of several rows for one handle, the row this action belongs to.
+
+    A follow belongs to the highest-priority pending row — the same row dedupe_best_pending
+    picked to follow from, i.e. the soonest-to-follow list. A later unfollow belongs to
+    whichever row that follow landed on.
+    """
+    if new_status == "unfollowed":
+        followed_rows = [e for e in matches if e.get("status") == "followed"]
+        if followed_rows:
+            return followed_rows[0]
+    pending = [e for e in matches if e.get("status") == "pending_follow"]
+    if not pending:
+        return matches[0]
+    if len(pending) == 1:
+        return pending[0]
+    sizes = pending_source_sizes([e for e in queue if e.get("status") == "pending_follow"])
+    priority = effective_ranks(load_list_priority(), sizes, sizes.keys())
+    return min(pending, key=lambda e: entry_rank_tuple(e, sizes, priority))
+
+
+def mark_follows_back(usernames):
+    """Flag handles that follow us back in queue.json so we never re-queue them.
+
+    The unfollow pass is the only place this is visible — X only renders "Follows you"
+    on the profile / in the following list. The row keeps its `followed` status (we are
+    still following them); the flag is what tells a list reset to leave them alone
+    instead of queueing them for another follow.
+    """
+    if isinstance(usernames, str):
+        usernames = [usernames]
+    wanted = {u.lower().lstrip("@") for u in usernames if u}
+    if not wanted:
+        return 0
+
+    try:
+        marked = 0
+        with queue_transaction() as queue:
+            now = datetime.now().isoformat()
+            for entry in queue:
+                if entry.get("username", "").lower() not in wanted:
+                    continue
+                if entry.get("follows_back"):
+                    continue
+                entry["follows_back"] = True
+                entry["follows_back_at"] = now
+                marked += 1
+        return marked
+    except Exception as e:
+        print(f"⚠️ Error marking follows-back in queue.json: {e}")
+        return 0
+
+
+def record_followed(followed_df, username, when=None):
+    """Record a follow by appending one line to followed.csv, never by rewriting it.
+
+    The dashboard deletes rows from this file when a list is reset for a second pass. We
+    hold followed_df in memory for a whole cycle, so rewriting the file from it would put
+    every deleted row straight back, and those re-queued handles would then be skipped
+    forever as "already in followed.csv" — the reset would silently do nothing. Appending
+    leaves concurrent deletions intact (unfollowed.csv has always been written this way),
+    and the stale in-memory copy costs at most one cycle: the loop re-reads both files
+    from disk at the top of every pass.
+    """
+    when = when or datetime.now()
+    try:
+        fresh = not os.path.exists("followed.csv") or os.path.getsize("followed.csv") == 0
+        with open("followed.csv", "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if fresh:
+                writer.writerow(["username", "follow_timestamp"])
+            writer.writerow([username, when])
+    except Exception as e:
+        print(f"⚠️ Error appending to followed.csv: {e}")
+    new_entry = pd.DataFrame([[username, when]], columns=["username", "follow_timestamp"])
+    return pd.concat([followed_df, new_entry], ignore_index=True)
+
+
+def record_unfollowed(username, when=None):
+    """Append one line to unfollowed.csv through the csv module, as record_followed does.
+
+    These appends used to be bare f-strings, so a value with a comma went in unquoted.
+    On 2026-09-27 one did (a cookie line imported as a "handle"), pandas rejected the
+    whole file, and the bot crashed on every start until the line was repaired.
+    """
+    when = when or datetime.now()
+    try:
+        fresh = not os.path.exists("unfollowed.csv") or os.path.getsize("unfollowed.csv") == 0
+        with open("unfollowed.csv", "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if fresh:
+                writer.writerow(["username", "unfollow_timestamp"])
+            writer.writerow([username, when])
+    except Exception as e:
+        print(f"⚠️ Error appending to unfollowed.csv: {e}")
+
+
+_CSV_SKIP_WARNED = {}
+
+
+def load_action_csv(path, ts_col):
+    """followed.csv / unfollowed.csv -> DataFrame[username, ts_col], tolerant of damage.
+
+    One malformed line used to take pd.read_csv down, and the bot with it, on every
+    start. A line that isn't exactly (handle, timestamp) can't be anyone we followed or
+    unfollowed, so it is skipped, and said so once rather than every cycle.
+    """
+    good, bad = [], []
+    if os.path.exists(path):
+        with open(path, newline="", encoding="utf-8", errors="replace") as f:
+            reader = csv.reader(f)
+            next(reader, None)
+            for rec in reader:
+                if len(rec) == 2 and is_x_target(rec[0]):
+                    good.append(rec)
+                elif any(field.strip() for field in rec):
+                    bad.append(reader.line_num)
+    if bad and _CSV_SKIP_WARNED.get(path) != len(bad):
+        _CSV_SKIP_WARNED[path] = len(bad)
+        print(f"⚠️ {path}: ignoring {len(bad)} line(s) that aren't a handle + timestamp "
+              f"(first at line {bad[0]})")
+    df = pd.DataFrame(good, columns=["username", ts_col])
+    df[ts_col] = pd.to_datetime(df[ts_col], format="ISO8601", errors="coerce")
+    return df
+
+
 # Helper function to update queue.json status
 def update_queue_status(username, new_status, skip_reason=None):
     """Update a user's status in queue.json and append to history.jsonl"""
-    queue_file = "queue.json"
-    if not os.path.exists(queue_file):
-        return
-    
     try:
-        with open(queue_file, 'r') as f:
-            queue = json.load(f)
-        
-        username_lower = username.lower()
         updated = False
         updated_entry = None
-        for entry in queue:
-            if entry.get("username", "").lower() == username_lower:
+        shadowed = []
+        member_lists = []
+        # The lock is held for the read and the mutation only. history.jsonl and the retry
+        # CSV are appended after it is released: they are append-only and nothing else
+        # serialises against them.
+        with queue_transaction() as queue:
+            username_lower = username.lower()
+            matches = [e for e in queue if e.get("username", "").lower() == username_lower]
+            if matches:
+                entry = _primary_queue_row(queue, matches, new_status)
                 entry["status"] = new_status
                 entry["timestamp"] = datetime.now().isoformat()
                 if skip_reason:
                     entry["skip_reason"] = skip_reason
                 updated = True
                 updated_entry = entry
-                break
-        
+                # Every list this handle sits in, actioned list first. The dashboard shows
+                # this in History so a row says where the follow came from, not just who.
+                for row in [entry] + [m for m in matches if m is not entry]:
+                    for name in (row.get("source_list"), row.get("claimed_from")):
+                        if name and name not in member_lists:
+                            member_lists.append(name)
+                # A handle can sit in several imported lists. We only ever act on it once — from the
+                # soonest-to-follow list — so retire the leftover rows instead of leaving them
+                # pending_follow forever (they would never be actioned, and their lists would never
+                # reach 100%).
+                if new_status in ("followed", "unfollowed"):
+                    now = datetime.now().isoformat()
+                    for other in matches:
+                        if other is entry or other.get("status") != "pending_follow":
+                            continue
+                        other["status"] = "skipped"
+                        other["timestamp"] = now
+                        other["skip_reason"] = f"duplicate_actioned_from:{entry.get('source_list', '')}"
+                        shadowed.append(other.get("source_list", ""))
+
         if updated:
-            with open(queue_file, 'w') as f:
-                json.dump(queue, f, indent=1)
+            if shadowed:
+                print(f"   ↪ @{username} also sat in {len(shadowed)} other list(s); "
+                      f"counted under {updated_entry.get('source_list', '')} and retired there")
             
             # Also append to history.jsonl for the dashboard's Recent Activity feed
             try:
@@ -437,6 +736,10 @@ def update_queue_status(username, new_status, skip_reason=None):
                         "username": username,
                         "timestamp": datetime.now().isoformat(),
                     }
+                    if member_lists:
+                        history_entry["source_list"] = member_lists[0]
+                        if len(member_lists) > 1:
+                            history_entry["source_lists"] = member_lists
                     if skip_reason:
                         history_entry["skip_reason"] = skip_reason
                     with open("history.jsonl", "a", encoding="utf-8") as hf:
@@ -722,6 +1025,86 @@ def resolve_numeric_user_id(user_id):
     except Exception as e:
         print(f"⚠️ X ID resolver failed for {user_id}: {e}")
         return None
+
+
+def handle_from_url(driver):
+    """x.com/<handle>[/...] -> handle, once /i/user/<id> has redirected there."""
+    try:
+        first = urlparse(driver.current_url).path.strip("/").split("/")[0]
+    except Exception:
+        return None
+    if first in ("i", "home") or first.isdigit() or not is_x_target(first):
+        return None
+    return first
+
+
+def profile_follow_state(driver, handle, timeout=10):
+    """What this profile's own follow button says: following, pending, not_following, or None.
+
+    Matched on the handle inside each button's aria-label, case-insensitively: a profile
+    also carries "Follow @someone" buttons for suggested accounts, and X keeps each
+    account's own capitalisation where the queue stores it lowercased. A creator's
+    button reads "Subscribe to @x" with the unfollow behind "Unfollow @x"; that counts
+    as following.
+    """
+    target = re.compile(r"@" + re.escape(str(handle).lower().lstrip("@")) + r"(?![a-z0-9_])")
+    deadline = time.time() + timeout
+    while True:
+        try:
+            labels = driver.execute_script(
+                "return Array.from(document.querySelectorAll('button[aria-label]'))"
+                ".map(b => b.getAttribute('aria-label').toLowerCase())") or []
+        except Exception:
+            labels = []
+        found = set()
+        for label in labels:
+            if not target.search(label):
+                continue
+            if label.startswith(("following @", "unfollow @")):
+                found.add("following")
+            elif "pending" in label:
+                found.add("pending")
+            elif label.startswith("follow @"):
+                found.add("not_following")
+        for state in ("following", "pending", "not_following"):
+            if state in found:
+                return state
+        if time.time() >= deadline:
+            return None
+        time.sleep(1)
+
+
+def confirm_follow_state(driver, url, handle, expected):
+    """Reload the profile and check X kept the change. True, False, or None (can't tell).
+
+    X flips the button the moment it is clicked, before its server answers, so reading
+    the same page back cannot tell an applied follow/unfollow from a rejected one. On
+    2026-09-28 X's own following list disagreed with 7 unfollows logged "✅ Unfollowed"
+    and 17 follows logged "✅ Follow confirmed" in the preceding week.
+    """
+    time.sleep(random.uniform(2, 4))
+    if not safe_get(driver, url):
+        return None
+    if str(handle).isdigit():
+        handle = handle_from_url(driver) or handle
+    state = profile_follow_state(driver, handle)
+    if state is None:
+        return None
+    return state in expected
+
+
+def verified_unfollow(driver, url, handle, queue_username):
+    kept = confirm_follow_state(driver, url, handle, {"not_following"})
+    if kept is False:
+        print(f"⚠️ @{handle}: X still shows us following after a reload, so the unfollow "
+              "didn't take. Not recording it.")
+        save_debug_snapshot(driver, f"unfollow_not_applied_{queue_username}")
+        return TRANSIENT_X_ERROR_RESULT
+    if kept is None:
+        print(f"ℹ️ @{handle}: couldn't read the follow button after a reload; trusting the click.")
+    else:
+        print(f"✔️ @{handle}: unfollow confirmed after a reload.")
+    return True
 
 
 def profile_target(username):
@@ -1307,10 +1690,17 @@ def follow_user(driver, username, like_limiter):
                 print(f"⚠️ Error verifying follow for @{profile_username}: {e}")
                 save_debug_snapshot(driver, f"verify_error_{queue_username}")
             
+            kept = confirm_follow_state(driver, url, profile_username, {"following", "pending"})
+            if kept is False:
+                print(f"⚠️ @{profile_username}: after a reload X shows no follow, so it didn't take. "
+                      "Not recording it.")
+                save_debug_snapshot(driver, f"follow_not_applied_{queue_username}")
+                return TRANSIENT_X_ERROR_RESULT
+
             if liked_count > 0:
                 print(f"💝 Bonus: Liked {liked_count} posts during follow")
             
-            print(f"📝 @{profile_username} followed; will unfollow after 3 days")
+            print(f"📝 @{profile_username} followed; will unfollow after {unfollow_after_days():g} days")
             return True
         else:
             if page_has_transient_x_error(driver):
@@ -1430,11 +1820,18 @@ def like_recent_posts(driver, username, like_limiter, max_likes=2):
         return 0
 
 # Enhanced unfollow function with better detection avoidance
-def unfollow_user(driver, username):
-    """Unfollow a user with a robust, multi-path strategy."""
+def unfollow_user(driver, username, via_id=False):
+    """Unfollow a user with a robust, multi-path strategy.
+
+    True only once a reload shows X applied it (or the account is gone);
+    TRANSIENT_X_ERROR_RESULT when X kept us following, so the caller backs off.
+    """
     try:
         queue_username = str(username).strip()
-        profile_username, url = profile_target(queue_username)
+        if via_id:
+            profile_username, url = queue_username, f"https://x.com/i/user/{queue_username}"
+        else:
+            profile_username, url = profile_target(queue_username)
         if profile_username != queue_username:
             print(f"🔎 Unfollowing queued ID {queue_username} as @{profile_username}")
         if not safe_get(driver, url):
@@ -1443,6 +1840,8 @@ def unfollow_user(driver, username):
         browse_delay = random.uniform(2, 5)
         print(f"👀 Checking @{profile_username}'s profile for {round(browse_delay, 1)}s...")
         time.sleep(browse_delay)
+        if profile_username.isdigit():
+            profile_username = handle_from_url(driver) or profile_username
         
         if page_has_transient_x_error(driver):
             print(f"⏸️ @{profile_username}: X returned 'Something went wrong'; not marking as unfollowed.")
@@ -1453,6 +1852,14 @@ def unfollow_user(driver, username):
         try:
             page_text = driver.page_source.lower()
             if "this page doesn" in page_text or "this account doesn" in page_text:
+                if queue_username.isdigit() and not via_id and profile_username != queue_username:
+                    # The id -> handle cache goes stale when an account renames, and the
+                    # old handle 404s while we still follow the id. Ask by id before
+                    # recording an unfollow that never happened.
+                    print(f"🔎 @{profile_username} is gone; retrying queued ID {queue_username} directly")
+                    load_resolved_user_ids().pop(queue_username, None)
+                    save_resolved_user_ids()
+                    return unfollow_user(driver, queue_username, via_id=True)
                 print(f"⚠️ @{profile_username}: page doesn't exist (deleted/invalid). Skipping.")
                 return True
             if "account suspended" in page_text or "account is suspended" in page_text:
@@ -1491,7 +1898,7 @@ def unfollow_user(driver, username):
                 discard_button_selector = "//button[@data-testid='confirmationSheetConfirm']//span[text()='Discard']"
                 if robust_click(driver, discard_button_selector):
                     print(f"✅ Cancelled pending follow request for @{profile_username}.")
-                    return True
+                    return verified_unfollow(driver, url, profile_username, queue_username)
                 else:
                     print("❌ Failed to click 'Discard' button. Trying other methods.")
                     break
@@ -1506,10 +1913,9 @@ def unfollow_user(driver, username):
             confirm_button_selector = "//button[@data-testid='confirmationSheetConfirm']"
             if robust_click(driver, confirm_button_selector):
                 print(f"✅ Unfollowed @{profile_username} (Standard Flow).")
-                return True
             else:
-                print("❌ Failed to click confirmation button. Assuming unfollow failed but moving on.")
-                return True # Return True to avoid getting stuck
+                print("❌ Failed to click confirmation button; checking whether it took anyway.")
+            return verified_unfollow(driver, url, profile_username, queue_username)
 
         # --- STRATEGY 3: Premium "More Actions" Menu (ARIA-LABEL BASED) ---
         print("ℹ️ Standard button not found or failed. Trying Premium unfollow via aria-label trigger.")
@@ -1533,7 +1939,7 @@ def unfollow_user(driver, username):
                 for menu_sel in unfollow_menu_item_selectors:
                     if robust_click(driver, menu_sel):
                         print(f"✅ Unfollowed @{profile_username} via Premium menu (aria-label path).")
-                        return True
+                        return verified_unfollow(driver, url, profile_username, queue_username)
                 print("⚠️ Failed to click 'Unfollow' in opened Premium menu.")
                 ActionChains(driver).send_keys(Keys.ESCAPE).perform()
                 break
@@ -1553,7 +1959,7 @@ def unfollow_user(driver, username):
                 unfollow_menu_item_selector = "//div[@role='menuitem']//span[contains(text(), 'Unfollow @')]"
                 if robust_click(driver, unfollow_menu_item_selector):
                     print(f"✅ Unfollowed @{profile_username} (Premium Flow).")
-                    return True
+                    return verified_unfollow(driver, url, profile_username, queue_username)
                 else:
                     print("⚠️ Failed to click unfollow in menu. Closing menu and trying standard flow.")
                     ActionChains(driver).send_keys(Keys.ESCAPE).perform()
@@ -1575,10 +1981,9 @@ def unfollow_user(driver, username):
                 confirm_button_selector = "//button[@data-testid='confirmationSheetConfirm']"
                 if robust_click(driver, confirm_button_selector):
                     print(f"✅ Unfollowed @{profile_username} (Standard Flow).")
-                    return True
                 else:
-                    print("❌ Failed to click confirmation button. Assuming action completed or failed.")
-                    return True # Return True to avoid getting stuck
+                    print("❌ Failed to click confirmation button; checking whether it took anyway.")
+                return verified_unfollow(driver, url, profile_username, queue_username)
 
         print(f"❌ All unfollow methods failed for @{profile_username}.")
         save_debug_snapshot(driver, f"unfollow_allfail_{queue_username}")
@@ -1590,7 +1995,12 @@ def unfollow_user(driver, username):
         if not check_session_alive(driver):
             print(f"🚨 SESSION EXPIRED! Unfollow of @{profile_username} was NOT real. Aborting.")
             return False
-        # If session is alive, user may genuinely already be unfollowed
+        # If session is alive, user may genuinely already be unfollowed -- unless the
+        # page says otherwise, in which case the selectors missed and it must not be recorded.
+        if profile_follow_state(driver, profile_username, timeout=3) == "following":
+            print(f"⚠️ @{profile_username}: no unfollow control matched, but the page still shows us "
+                  "following. Not recording an unfollow.")
+            return TRANSIENT_X_ERROR_RESULT
         print(f"ℹ️ Session is alive but unfollow buttons not found. Assuming already unfollowed.")
         return True
 
@@ -2046,15 +2456,40 @@ def get_current_username(driver):
         return username
 
 
-def load_whitelist():
+def load_whitelist(quiet=False):
     """Load whitelist of accounts to never unfollow"""
     whitelist_file = "whitelist.txt"
     if os.path.exists(whitelist_file):
         with open(whitelist_file, 'r') as f:
-            whitelist = set(line.strip().lower() for line in f if line.strip())
-        print(f"📋 Loaded {len(whitelist)} accounts from whitelist")
+            whitelist = set(line.strip().lower().lstrip("@") for line in f if line.strip())
+        if not quiet:
+            print(f"📋 Loaded {len(whitelist)} accounts from whitelist")
         return whitelist
     return set()
+
+
+UNFOLLOW_AFTER_DAYS_DEFAULT = 4
+# A follow still not unfollowed this many hours after it came due is a backlog: unfollowing
+# fell behind (the bot was stopped, or unfollows failed or were rate-limited while follows
+# went on). A busy follow day four days ago only makes many come due at once; those are
+# cleared one per cycle beside the usual follow.
+BACKLOG_AFTER_OVERDUE_HOURS = 24
+# While a backlog is being cleared, follow once per this many unfollows.
+CATCH_UP_UNFOLLOWS_PER_FOLLOW = 6
+
+
+def unfollow_after_days():
+    """Days a follow is kept before it is unfollowed: the dashboard's "Unfollow After
+    (days)" setting in bot_config.json. Re-read every cycle, so a change there takes
+    effect without a restart."""
+    try:
+        with open("bot_config.json", "r") as f:
+            days = float(json.load(f).get("unfollow_after_days", UNFOLLOW_AFTER_DAYS_DEFAULT))
+        if days > 0:
+            return days
+    except Exception:
+        pass
+    return UNFOLLOW_AFTER_DAYS_DEFAULT
 
 
 def save_cleanup_progress(processed_users, unfollowed_users):
@@ -2227,6 +2662,14 @@ def clean_following_list(driver, activity_tracker, unfollow_limiter, batch_size=
         print(f"  To unfollow: {len(users_to_unfollow)}")
         print(f"  Skipped: {len(skipped_users)}")
         print("="*70)
+
+        # The following list is the only reliable place "Follows you" shows up in bulk —
+        # flag those handles in queue.json so a list reset never re-queues a mutual.
+        mutuals = [s['user'] for s in skipped_users if s['reason'] == 'follows_back']
+        if mutuals:
+            marked = mark_follows_back(mutuals)
+            if marked:
+                print(f"🤝 Flagged {marked} queue row(s) as following you back")
         
         if dry_run:
             print("\n🔍 DRY RUN SUMMARY:")
@@ -2256,9 +2699,7 @@ def clean_following_list(driver, activity_tracker, unfollow_limiter, batch_size=
                 if unfollow_user(driver, user):
                     unfollowed_users.append(user)
                     
-                    # Record in unfollowed.csv
-                    with open("unfollowed.csv", "a") as f:
-                        f.write(f"{user},{datetime.now()}\n")
+                    record_unfollowed(user)
                     
                     # Update tracking
                     unfollow_limiter.record()
@@ -2600,9 +3041,7 @@ def scroll_up_and_unfollow_incremental(driver, users_to_unfollow, unfollow_limit
                 # Try to unfollow directly from the page
                 if unfollow_from_following_page(driver, username):
                     unfollowed_users.append(username)
-                    # Record in unfollowed.csv
-                    with open("unfollowed.csv", "a") as f:
-                        f.write(f"{username},{datetime.now()}\n")
+                    record_unfollowed(username)
                     
                     # Update tracking
                     unfollow_limiter.record()
@@ -2992,6 +3431,13 @@ def clean_following_list_efficient(driver, activity_tracker, unfollow_limiter, b
     print(f" To unfollow: {len(users_to_unfollow)}")
     print(f" Skipped: {len(skipped_users)}")
     print("="*70)
+
+    # Same here: record the mutuals we just saw so a list reset leaves them alone.
+    mutuals = [s['user'] for s in skipped_users if s['reason'] == 'follows_back']
+    if mutuals:
+        marked = mark_follows_back(mutuals)
+        if marked:
+            print(f"🤝 Flagged {marked} queue row(s) as following you back")
     
     # If dry run, just return the list
     if dry_run:
@@ -3027,9 +3473,7 @@ def clean_following_list_efficient(driver, activity_tracker, unfollow_limiter, b
         if unfollow_from_following_page(driver, user):
             unfollowed_users.append(user)
 
-            # Record in unfollowed.csv
-            with open("unfollowed.csv", "a") as f:
-                f.write(f"{user},{datetime.now()}\n")
+            record_unfollowed(user)
 
             # Update tracking
             unfollow_limiter.record()
@@ -3339,9 +3783,7 @@ def clean_following_list_simple(driver, activity_tracker, unfollow_limiter, dry_
         if unfollow_user_direct(driver, username):
             unfollowed.append(username)
             
-            # Record unfollow
-            with open("unfollowed.csv", "a") as f:
-                f.write(f"{username},{datetime.now()}\n")
+            record_unfollowed(username)
             
             # Update limiter and tracker
             unfollow_limiter.record()
@@ -3461,6 +3903,8 @@ def main():
             elif cleanup_config['dry_run']:
                 print("\n✅ Dry run complete. No accounts were unfollowed.")
 
+        # Unfollows since the last follow; paces follows while a backlog is cleared.
+        unfollow_streak = 0
         while True:
             # Check driver health before each action
             if not is_driver_alive(driver):
@@ -3513,19 +3957,14 @@ def main():
                 action_performed = False
 
                 # Load followed and unfollowed data FIRST (needed for filtering)
-                if os.path.exists("followed.csv"):
-                    followed_df = pd.read_csv("followed.csv", parse_dates=["follow_timestamp"])
-                else:
-                    followed_df = pd.DataFrame(columns=["username", "follow_timestamp"])
-                    followed_df.to_csv("followed.csv", index=False)
+                if not os.path.exists("followed.csv"):
+                    pd.DataFrame(columns=["username", "follow_timestamp"]).to_csv("followed.csv", index=False)
+                followed_df = load_action_csv("followed.csv", "follow_timestamp")
 
-                if os.path.exists("unfollowed.csv"):
-                    unfollowed_df = pd.read_csv("unfollowed.csv")
-                    unfollowed_set = set(u.lower() for u in unfollowed_df["username"])
-                else:
+                if not os.path.exists("unfollowed.csv"):
                     with open("unfollowed.csv", "w") as f:
                         f.write("username,unfollow_timestamp\n")
-                    unfollowed_set = set()
+                unfollowed_set = set(load_action_csv("unfollowed.csv", "unfollow_timestamp")["username"].str.lower())
                 
                 followed_set = set(followed_df["username"].str.lower().values)
 
@@ -3549,14 +3988,19 @@ def main():
                             else:
                                 pending_entries.append(entry)
 
-                        deduped_ordered, _sizes = dedupe_best_pending(pending_entries)
+                        list_priority = load_list_priority()
+                        deduped_ordered, _sizes = dedupe_best_pending(pending_entries, list_priority)
 
                         skipped_followed = 0
                         skipped_unfollowed = 0
+                        skipped_invalid = 0
 
                         for e in deduped_ordered:
                             u = e.get("username", "")
                             u_lower = u.lower()
+                            if not is_x_target(u):
+                                skipped_invalid += 1
+                                continue
                             if u_lower in followed_set:
                                 skipped_followed += 1
                                 continue
@@ -3572,76 +4016,124 @@ def main():
                             print("⚠️ No pending follows in queue.json")
                         else:
                             print(f"📋 Pending rows: {total_raw}, ready now: {ready_raw}, unique usernames: {len(deduped_ordered)} ({dup_removed} duplicate rows dropped)")
-                            print(f"   Follow order: smallest source list first, then smallest followers_count (missing last)")
+                            if list_priority:
+                                ranked = sorted(list_priority, key=list_priority.get)
+                                print(f"   Follow order: manual list order from list_priority.json ({len(ranked)} lists, first: {ranked[0]}), then smallest source list, then smallest followers_count (missing last)")
+                            else:
+                                print(f"   Follow order: smallest source list first, then smallest followers_count (missing last)")
                             print(f"   Eligible for follow actions now: {len(usernames)}")
-                            print(f"   Skipped: {skipped_followed} already in followed.csv, {skipped_unfollowed} in unfollowed.csv, {retry_waiting} waiting for retry")
+                            print(f"   Skipped: {skipped_followed} already in followed.csv, {skipped_unfollowed} in unfollowed.csv, {retry_waiting} waiting for retry"
+                                  + (f", {skipped_invalid} not an X handle" if skipped_invalid else ""))
                     except Exception as e:
                         print(f"⚠️ Error loading queue.json: {e}")
                         usernames = []
                 else:
                     print("⚠️ No queue.json found")
 
-                # Calculate following difference (case-insensitive comparison)
+                # Calculate following difference (case-insensitive comparison). The Whitelist
+                # page promises "never unfollow"; only the cleanup modes used to read it, so
+                # the everyday unfollow pass removed whitelisted accounts after 3 days.
                 followed_usernames_lower = followed_df["username"].str.lower()
-                followed_not_unfollowed = followed_df[~followed_usernames_lower.isin(unfollowed_set)]
+                followed_not_unfollowed = followed_df[
+                    ~followed_usernames_lower.isin(unfollowed_set | load_whitelist(quiet=True))]
                 current_difference = len(followed_not_unfollowed)
                 print(f"📊 Current following difference: {current_difference}")
                 print(f"📊 Today's activity: F:{activity_tracker['follows_today']}/{follow_limiter.daily_limit} U:{activity_tracker['unfollows_today']}/{unfollow_limiter.daily_limit} L:{activity_tracker['likes_today']}/{like_limiter.daily_limit}")
 
-                # UNFOLLOW LOGIC - Prioritize if above 430 following difference
                 # 430 = ~370 organic gap + 60 bot headroom  (keeps following/followers ≤ ~1.3)
                 above_threshold = current_difference > 430
-                
-                should_unfollow = above_threshold or unfollow_only_mode
-                if should_unfollow and unfollow_limiter.can_perform() and not followed_not_unfollowed.empty:
-                    # 3-day minimum before unfollowing (tighter cap → faster slot reclaim)
-                    cutoff = datetime.now() - timedelta(days=3)
-                    eligible_unfollows = followed_not_unfollowed[
-                        followed_not_unfollowed["follow_timestamp"] < cutoff
-                    ].sort_values("follow_timestamp", ascending=True)
-                    
-                    if not eligible_unfollows.empty:
-                        username = eligible_unfollows.iloc[0]["username"]
-                        print(f"🎯 Unfollowing: @{username} (difference: {current_difference}/{len(usernames)})")
-                        
-                        unfollow_result = unfollow_user(driver, username)
-                        
-                        if unfollow_result == TRANSIENT_X_ERROR_RESULT:
-                            pause_for_transient_x_error(f"unfollowing @{username}")
-                            action_performed = True
-                            continue
-                        elif unfollow_result == "follows_back":
-                            # User follows back - add to whitelist behavior (record in unfollowed to skip next time)
-                            print(f"🛡️ @{username} follows back - marking as processed to avoid retry")
-                            with open("unfollowed.csv", "a") as f:
-                                f.write(f"{username},{datetime.now()}\n")
-                            unfollowed_set.add(username.lower())
-                            # Don't count as unfollow action, just move on
-                            action_performed = False
-                        elif unfollow_result:
-                            # Successful unfollow
-                            with open("unfollowed.csv", "a") as f:
-                                f.write(f"{username},{datetime.now()}\n")
-                            unfollowed_set.add(username.lower())
-                            # Update queue.json status
-                            update_queue_status(username, "unfollowed")
-                            unfollow_limiter.record()
-                            
-                            # Update tracking (sync from persistent storage)
-                            current_counts = load_daily_counts()
-                            activity_tracker['unfollows_today'] = current_counts['unfollows']
-                            activity_tracker['recent_actions'].append({
-                                'type': 'unfollow',
-                                'time': datetime.now(),
-                                'user': username
-                            })
-                            
-                            action_performed = True
-                            smart_break(recent_activity_count, base_minutes=3)
 
-                # FOLLOW LOGIC - Only if not too far above threshold AND not in unfollow-only mode
-                can_follow = current_difference < 455 and not unfollow_only_mode  # Allow some buffer above 430
-                
+                # UNFOLLOW LOGIC - in both modes, anyone followed at least
+                # unfollow_after_days() ago is unfollowed, oldest first. Normal mode used to
+                # unfollow only above the 430 threshold, so after an unfollow-only run had
+                # drained the difference it sat on overdue follows for days, until following
+                # alone pushed the difference back over 430.
+                days_cutoff = unfollow_after_days()
+                cutoff = datetime.now() - timedelta(days=days_cutoff)
+                eligible_unfollows = followed_not_unfollowed[
+                    followed_not_unfollowed["follow_timestamp"] < cutoff
+                ].sort_values("follow_timestamp", ascending=True)
+
+                # Don't keep re-picking a target that repeatedly throws a
+                # transient error while the internet is fine (e.g. a
+                # suspended/deactivated account) — it would wedge the loop.
+                if SESSION_TRANSIENT_UNFOLLOW_SKIPS and not eligible_unfollows.empty:
+                    eligible_unfollows = eligible_unfollows[
+                        ~eligible_unfollows["username"].str.lower().isin(SESSION_TRANSIENT_UNFOLLOW_SKIPS)
+                    ]
+                backlog_cutoff = cutoff - timedelta(hours=BACKLOG_AFTER_OVERDUE_HOURS)
+                backlog = int((eligible_unfollows["follow_timestamp"] < backlog_cutoff).sum())
+                print(f"📊 Due for unfollow (followed {days_cutoff:g}+ days ago): {len(eligible_unfollows)}"
+                      + (f" ({backlog} overdue {BACKLOG_AFTER_OVERDUE_HOURS}h+: backlog)" if backlog else ""))
+
+                unfollowed_this_cycle = False
+                if not eligible_unfollows.empty and unfollow_limiter.can_perform():
+                    username = eligible_unfollows.iloc[0]["username"]
+                    print(f"🎯 Unfollowing: @{username} (difference: {current_difference}/{len(usernames)})")
+
+                    unfollow_result = unfollow_user(driver, username)
+
+                    if unfollow_result == TRANSIENT_X_ERROR_RESULT:
+                        outage = pause_for_transient_x_error(f"unfollowing @{username}")
+                        if not outage:
+                            # Internet is fine but this specific target keeps
+                            # failing — rotate off it after a few strikes so
+                            # one bad account can't stall all progress.
+                            key = username.lower()
+                            strikes = TRANSIENT_UNFOLLOW_FAILS.get(key, 0) + 1
+                            TRANSIENT_UNFOLLOW_FAILS[key] = strikes
+                            if strikes >= 3:
+                                SESSION_TRANSIENT_UNFOLLOW_SKIPS.add(key)
+                                print(f"⏭️ Skipping @{username} for this session after {strikes} transient errors "
+                                      f"(internet is up — likely account-specific).")
+                        action_performed = True
+                        continue
+                    elif unfollow_result == "follows_back":
+                        # User follows back - add to whitelist behavior (record in unfollowed to skip next time)
+                        print(f"🛡️ @{username} follows back - marking as processed to avoid retry")
+                        # Flag the queue row too: the CSV line alone is indistinguishable from a
+                        # real unfollow, and a list reset must never re-queue a mutual.
+                        mark_follows_back(username)
+                        record_unfollowed(username)
+                        unfollowed_set.add(username.lower())
+                        # Don't count as unfollow action, just move on
+                        action_performed = False
+                    elif unfollow_result:
+                        # Successful unfollow
+                        record_unfollowed(username)
+                        unfollowed_set.add(username.lower())
+                        # Update queue.json status
+                        update_queue_status(username, "unfollowed")
+                        unfollow_limiter.record()
+
+                        # Update tracking (sync from persistent storage)
+                        current_counts = load_daily_counts()
+                        activity_tracker['unfollows_today'] = current_counts['unfollows']
+                        activity_tracker['recent_actions'].append({
+                            'type': 'unfollow',
+                            'time': datetime.now(),
+                            'user': username
+                        })
+
+                        action_performed = True
+                        unfollowed_this_cycle = True
+                        unfollow_streak += 1
+                        smart_break(recent_activity_count, base_minutes=3)
+
+                # FOLLOW LOGIC - Only if not too far above threshold AND not in unfollow-only mode.
+                # While a backlog remains (follows overdue BACKLOG_AFTER_OVERDUE_HOURS+), follow
+                # only once per CATCH_UP_UNFOLLOWS_PER_FOLLOW unfollows: one unfollow per follow
+                # barely outpaces new ones coming due, so it would take days to clear, and not
+                # following at all stalls growth for as long as it lasts. Follows that merely
+                # came due go one unfollow per follow; holding follows for any 2+ due used to
+                # cut following to ~1/hour for most of a day after every busy follow day.
+                catching_up = unfollowed_this_cycle and backlog > 1
+                hold_follow = catching_up and unfollow_streak < CATCH_UP_UNFOLLOWS_PER_FOLLOW
+                if hold_follow and not unfollow_only_mode:
+                    print(f"⏸️ Not following this cycle: {backlog - 1} more in the unfollow backlog "
+                          f"(next follow after {CATCH_UP_UNFOLLOWS_PER_FOLLOW - unfollow_streak} more unfollows)")
+                can_follow = current_difference < 455 and not unfollow_only_mode and not hold_follow  # Allow some buffer above 430
+
                 if can_follow and follow_limiter.can_perform():
                     # usernames is already filtered (no followed, no unfollowed, no multi-list dupes)
                     if usernames:
@@ -3659,23 +4151,18 @@ def main():
                             if follow_result == "skipped":
                                 print(f"⏭️ Skipped @{username} - adding to followed.csv to avoid rechecking")
                                 # Add to followed.csv even if skipped to avoid infinite loop
-                                new_entry = pd.DataFrame([[username, datetime.now()]], 
-                                                       columns=["username", "follow_timestamp"])
-                                followed_df = pd.concat([followed_df, new_entry], ignore_index=True)
-                                followed_df.to_csv("followed.csv", index=False)
+                                followed_df = record_followed(followed_df, username)
                                 # Update queue.json status
                                 update_queue_status(username, "skipped", "already_following")
                                 # Don't increment activity counters, just continue
                                 action_performed = False  # Don't count as action, move to next user
                             else:
                                 # Record successful follow
-                                new_entry = pd.DataFrame([[username, datetime.now()]], 
-                                                       columns=["username", "follow_timestamp"])
-                                followed_df = pd.concat([followed_df, new_entry], ignore_index=True)
-                                followed_df.to_csv("followed.csv", index=False)
+                                followed_df = record_followed(followed_df, username)
                                 # Update queue.json status
                                 update_queue_status(username, "followed")
                                 follow_limiter.record()
+                                unfollow_streak = 0
                                 
                                 # Update tracking (sync from persistent storage)
                                 current_counts = load_daily_counts()
@@ -3692,10 +4179,7 @@ def main():
                             reason = "not found/suspended" if follow_result == "not_found" else "follow failed"
                             if follow_result == "not_found":
                                 print(f"⏭️ Skipping @{username} ({reason}) - adding to followed.csv to avoid retrying")
-                                new_entry = pd.DataFrame([[username, datetime.now()]],
-                                                       columns=["username", "follow_timestamp"])
-                                followed_df = pd.concat([followed_df, new_entry], ignore_index=True)
-                                followed_df.to_csv("followed.csv", index=False)
+                                followed_df = record_followed(followed_df, username)
                                 update_queue_status(username, "skipped", reason)
                             else:
                                 retry_at = schedule_follow_retry(username, reason)

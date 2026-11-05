@@ -1,0 +1,24 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!--
+  Server Drive — Bonjour advertisement.
+  Installed to /etc/avahi/services/smb.service by setup-server-drive.sh.
+
+  _smb._tcp makes the host appear in the macOS Finder sidebar; the
+  _device-info._tcp model record makes Finder draw it as a Mac Pro tower
+  instead of a generic server box.
+-->
+<service-group>
+  <name replace-wildcards="yes">%h</name>
+
+  <service>
+    <type>_smb._tcp</type>
+    <port>445</port>
+  </service>
+
+  <service>
+    <type>_device-info._tcp</type>
+    <port>0</port>
+    <txt-record>model=MacPro7,1</txt-record>
+  </service>
+</service-group>

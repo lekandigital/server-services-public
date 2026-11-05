@@ -9,6 +9,9 @@ User=__USER__
 Group=__USER__
 WorkingDirectory=__INSTALL_DIR__/twitter-bot
 ExecStart=/usr/bin/python3 dashboard.py --port 8003
+# The dashboard spawns the bot as a child, so it lands in this unit's cgroup.
+# KillMode=process stops a dashboard restart from taking the running bot down with it.
+KillMode=process
 Restart=always
 RestartSec=5
 StandardOutput=journal

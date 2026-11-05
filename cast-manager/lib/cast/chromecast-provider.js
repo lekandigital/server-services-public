@@ -69,7 +69,7 @@ function createChromecastProvider({ cfg, sshExec, upsertDevice, setSelectedDevic
       const start = Math.max(0, Math.floor(Number(input.startSeconds) || 0));
       const seekArg = input.preparedMedia?.receiverSeek && start > 0 ? `-t ${secondsToHMS(start)}` : '';
       const subtitleArg = input.subtitlesUrl ? `--subtitles ${shEsc(input.subtitlesUrl)}` : '';
-      await catt(`cast ${seekArg} ${subtitleArg} ${shEsc(input.streamUrl)}`.replace(/\s+/g, ' ').trim(), 30000, input.deviceId);
+      await catt(`cast ${seekArg} ${subtitleArg} ${shEsc(input.streamUrl)}`.trim(), 30000, input.deviceId);
       return {
         success: true,
         provider: 'chromecast',

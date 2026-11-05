@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune the Server Drive SMB recycle bin
+Documentation=file://__INSTALL_DIR__/server-drive/README.md
+
+[Service]
+Type=oneshot
+ExecStart=__INSTALL_DIR__/server-drive/prune-recycle.sh 30
+StandardOutput=journal
+StandardError=journal

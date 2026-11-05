@@ -1,0 +1,13 @@
+[Unit]
+Description=RustDesk Display Poller (HDMI ↔ Headless)
+
+[Timer]
+# Poll every 15 seconds to detect monitor plug/unplug
+# This is needed because the dummy Xorg driver prevents
+# udev from seeing real GPU hotplug events
+Unit=rustdesk-display-switch.service
+OnBootSec=30
+OnUnitActiveSec=15
+
+[Install]
+WantedBy=timers.target

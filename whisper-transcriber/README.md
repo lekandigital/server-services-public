@@ -16,6 +16,24 @@ Drag-and-drop upload with GPU status, advanced model options, and job history wi
 - Stores job state in SQLite (`jobs.db`, auto-created)
 - Uploaded files go to `uploads/` directory (auto-created)
 
+## Batches
+
+Pick or drop any number of files; they upload one by one and join a single queue. One worker process
+(`server.py --worker`, guarded by `worker.lock`) works through the queue oldest-first, claiming the GPU and
+loading the model once for the whole run. Picking more files while a batch runs adds them to it, and a
+reload picks the running batch back up. Finished batches download as one zip per format and can be
+reopened from History (📦).
+
+API: `POST /transcribe` takes several `file` fields (or a `batch_id` to add to an existing batch) and
+returns `batch_id`; then `GET /batch/<id>`, `POST /batch/<id>/cancel`, `GET /batch/<id>/download/<srt|vtt|txt|json>`.
+
+```bash
+curl -F file=@a.m4a -F file=@b.m4a http://<box>:8005/transcribe
+```
+
+A job left `processing` when its worker died (service restart, crash) is marked "Interrupted" by the next
+worker so it can't block the queue; upload it again to retry.
+
 ## Dependencies
 
 ```

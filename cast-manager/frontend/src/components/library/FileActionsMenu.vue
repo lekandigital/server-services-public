@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { inferFileKind } from '../../utils/files'
 import { deleteFile, generateStreamToken, trackRecent, renameFile, moveFile } from '../../api/files'
+import { withSudoRetry } from '../../api/sudo'
 import { createShare } from '../../api/shares'
 import { useLibraryStore } from '../../stores/libraryStore'
 import { useActivityStore } from '../../stores/activityStore'
@@ -77,18 +78,27 @@ async function toggleStar() {
 async function rename() {
   const next = prompt('New name', props.file.name)?.trim()
   if (!next || next === props.file.name) return
-  await run(async () => { await renameFile(props.file.path, next); await library.load() }, 'Renamed')
+  await run(async () => {
+    await withSudoRetry((pwd) => renameFile(props.file.path, next, pwd), { title: 'Renaming needs permission' })
+    await library.load()
+  }, 'Renamed')
 }
 
 async function move() {
   const destination = prompt('Move to directory', library.mediaRoot)?.trim()
   if (!destination) return
-  await run(async () => { await moveFile(props.file.path, destination); await library.load() }, 'Moved')
+  await run(async () => {
+    await withSudoRetry((pwd) => moveFile(props.file.path, destination, pwd), { title: 'Moving needs permission' })
+    await library.load()
+  }, 'Moved')
 }
 
 async function trash() {
   if (!confirm(`Move “${props.file.name}” to Trash? You can restore it later.`)) return
-  await run(async () => { await deleteFile(props.file.path); await library.load() }, 'Moved to Trash')
+  await run(async () => {
+    await withSudoRetry((pwd) => deleteFile(props.file.path, pwd), { title: 'Deleting needs permission' })
+    await library.load()
+  }, 'Moved to Trash')
 }
 
 function download() { window.open(downloadUrl(props.file.path), '_blank', 'noopener'); close() }

@@ -38,6 +38,15 @@ button{cursor:pointer;font-family:inherit}
 .file-info .file-size{color:var(--text-dim);margin-left:8px}
 input[type=file]{display:none}
 
+/* Selected files */
+.file-list{list-style:none;margin-top:12px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm)}
+.file-list li{display:flex;align-items:center;gap:10px;padding:8px 12px;font-size:.82rem;border-bottom:1px solid var(--border)}
+.file-list li:last-child{border-bottom:none}
+.file-list .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-list .size{color:var(--text-dim);font-size:.75rem;flex-shrink:0}
+.file-list .remove{background:none;border:none;color:var(--text-dim);font-size:1rem;line-height:1;padding:2px 6px;border-radius:4px}
+.file-list .remove:hover{color:var(--red);background:var(--bg)}
+
 /* Buttons */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 20px;border:none;border-radius:var(--radius-sm);font-size:.875rem;font-weight:600;transition:all .15s}
 .btn-primary{background:var(--accent);color:#fff}
@@ -80,6 +89,19 @@ input[type=file]{display:none}
 .progress-status{color:var(--text)}
 .progress-elapsed{color:var(--text-dim);font-size:.78rem}
 
+/* Batch queue */
+.queue-list{list-style:none;margin-top:16px;max-height:420px;overflow-y:auto}
+.queue-item{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center;padding:10px 0;border-top:1px solid var(--border);font-size:.82rem}
+.queue-item .status-pill{min-width:78px;text-align:center}
+.queue-item .name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue-item.viewing .name{color:var(--accent)}
+.queue-item .actions{display:flex;gap:4px}
+.queue-item .mini-track{grid-column:2/4;height:3px;background:var(--bg);border-radius:2px;overflow:hidden}
+.queue-item .mini-fill{height:100%;background:var(--accent);transition:width .3s}
+.queue-item .detail{grid-column:2/4;color:var(--text-dim);font-size:.75rem;overflow-wrap:anywhere}
+.zip-group{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.zip-label{font-size:.78rem;color:var(--text-dim)}
+
 /* Results */
 .result-section{display:none}
 .result-section.active{display:block}
@@ -91,6 +113,7 @@ input[type=file]{display:none}
 .word-highlight{background:var(--accent-glow);border-radius:3px;padding:1px 2px}
 
 /* History */
+#historyContent{overflow-x:auto}
 .history-table{width:100%;border-collapse:collapse;font-size:.82rem}
 .history-table th{text-align:left;padding:10px 12px;color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--border);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em}
 .history-table td{padding:10px 12px;border-bottom:1px solid var(--border)}
@@ -99,7 +122,8 @@ input[type=file]{display:none}
 .status-pill.completed{background:rgba(34,197,94,.15);color:var(--green)}
 .status-pill.processing{background:rgba(124,58,237,.15);color:#a78bfa}
 .status-pill.error{background:rgba(239,68,68,.15);color:var(--red)}
-.status-pill.pending{background:rgba(113,113,122,.15);color:var(--text-dim)}
+.status-pill.uploading{background:rgba(124,58,237,.15);color:#a78bfa}
+.status-pill.pending,.status-pill.waiting{background:rgba(113,113,122,.15);color:var(--text-dim)}
 .status-pill.cancelled{background:rgba(245,158,11,.15);color:var(--orange)}
 .history-actions{display:flex;gap:4px}
 .history-actions button{background:none;border:none;color:var(--text-dim);cursor:pointer;padding:4px;font-size:.85rem;border-radius:4px}
@@ -142,12 +166,13 @@ input[type=file]{display:none}
   <div class="card">
     <div class="upload-zone" id="uploadZone">
       <div class="upload-icon">&#128194;</div>
-      <div class="upload-text"><strong>Drop audio or video file here</strong><br>or click to browse</div>
+      <div class="upload-text"><strong>Drop audio or video files here</strong><br>or click to browse &middot; pick as many as you like</div>
       <div class="file-info" id="fileInfo" style="display:none">
         <span id="fileName"></span><span class="file-size" id="fileSize"></span>
       </div>
-      <input type="file" id="fileInput" accept=".mp3,.mp4,.wav,.m4a,.ogg,.flac,.mov,.mkv,.webm">
+      <input type="file" id="fileInput" multiple accept=".mp3,.mp4,.wav,.m4a,.ogg,.flac,.mov,.mkv,.webm">
     </div>
+    <ul class="file-list" id="fileList" style="display:none"></ul>
 
     <!-- Options -->
     <div style="margin-top:16px">
@@ -218,11 +243,13 @@ input[type=file]{display:none}
 
     <div class="transcribe-row">
       <button class="btn btn-primary" id="btnTranscribe" disabled>Transcribe</button>
+      <button class="btn btn-secondary" id="btnClear" style="display:none">Clear</button>
     </div>
   </div>
 
-  <!-- Progress -->
+  <!-- Progress / batch queue -->
   <div class="card progress-section" id="progressSection">
+    <div class="card-title" id="queueTitle">Progress</div>
     <div class="progress-bar-track">
       <div class="progress-bar-fill" id="progressBar"></div>
     </div>
@@ -230,8 +257,16 @@ input[type=file]{display:none}
       <span class="progress-status" id="progressStatus">Starting...</span>
       <span class="progress-elapsed" id="progressElapsed">0:00</span>
     </div>
+    <ul class="queue-list" id="queueList"></ul>
     <div class="btn-group">
       <button class="btn btn-danger btn-sm" id="btnCancel">Cancel</button>
+      <span class="zip-group" id="zipGroup" style="display:none">
+        <span class="zip-label">Download all (.zip)</span>
+        <button class="btn btn-secondary btn-sm" onclick="downloadBatch('srt')">&#128230; SRT</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadBatch('vtt')">&#128230; VTT</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadBatch('txt')">&#128230; TXT</button>
+        <button class="btn btn-secondary btn-sm" onclick="downloadBatch('json')">&#128230; JSON</button>
+      </span>
     </div>
   </div>
 
@@ -261,11 +296,13 @@ input[type=file]{display:none}
 
 <script>
 const API = window.location.origin;
-let currentJobId = null;
+const ALLOWED = ['mp3','mp4','wav','m4a','ogg','flac','mov','mkv','webm'];
+const TERMINAL = ['completed', 'error', 'cancelled'];
+let currentJobId = null;   // job shown in the Result card
 let pollTimer = null;
 let elapsedTimer = null;
-let elapsedStart = 0;
-let selectedFile = null;
+let selectedFiles = [];
+let batch = null;          // batch shown in the progress card: {id, items, local, uploading, cancelled, ...}
 let historyPage = 1;
 
 // Elements
@@ -274,7 +311,12 @@ const fileInput = document.getElementById('fileInput');
 const fileInfo = document.getElementById('fileInfo');
 const fileName = document.getElementById('fileName');
 const fileSize = document.getElementById('fileSize');
+const fileList = document.getElementById('fileList');
 const btnTranscribe = document.getElementById('btnTranscribe');
+const btnClear = document.getElementById('btnClear');
+const queueTitle = document.getElementById('queueTitle');
+const queueList = document.getElementById('queueList');
+const zipGroup = document.getElementById('zipGroup');
 const progressSection = document.getElementById('progressSection');
 const progressBar = document.getElementById('progressBar');
 const progressStatus = document.getElementById('progressStatus');
@@ -309,20 +351,43 @@ uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag
 uploadZone.addEventListener('drop', e => {
   e.preventDefault();
   uploadZone.classList.remove('dragover');
-  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
 });
-fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFile(fileInput.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files.length) handleFiles(fileInput.files); });
+btnClear.addEventListener('click', () => { selectedFiles = []; renderSelection(); });
 
-function handleFile(f) {
-  const ext = f.name.split('.').pop().toLowerCase();
-  const allowed = ['mp3','mp4','wav','m4a','ogg','flac','mov','mkv','webm'];
-  if (!allowed.includes(ext)) { alert('Unsupported format: .' + ext); return; }
-  selectedFile = f;
-  fileName.textContent = f.name;
-  fileSize.textContent = formatSize(f.size);
-  fileInfo.style.display = '';
-  uploadZone.classList.add('has-file');
-  btnTranscribe.disabled = false;
+function handleFiles(list) {
+  const skipped = [];
+  for (const f of list) {
+    const ext = f.name.split('.').pop().toLowerCase();
+    if (!ALLOWED.includes(ext)) { skipped.push(f.name); continue; }
+    if (!selectedFiles.some(s => s.name === f.name && s.size === f.size)) selectedFiles.push(f);
+  }
+  if (skipped.length) alert('Skipped unsupported files:\n' + skipped.join('\n'));
+  renderSelection();
+}
+
+function removeFile(i) {
+  selectedFiles.splice(i, 1);
+  renderSelection();
+}
+
+function renderSelection() {
+  const n = selectedFiles.length;
+  fileInput.value = '';   // so picking the same file again still fires 'change'
+  uploadZone.classList.toggle('has-file', n > 0);
+  fileInfo.style.display = n ? '' : 'none';
+  fileName.textContent = n === 1 ? selectedFiles[0].name : n + ' files';
+  fileSize.textContent = formatSize(selectedFiles.reduce((t, f) => t + f.size, 0));
+  fileList.style.display = n > 1 ? '' : 'none';
+  fileList.innerHTML = selectedFiles.map((f, i) =>
+    `<li><span class="name" title="${escHtml(f.name)}">${escHtml(f.name)}</span>` +
+    `<span class="size">${formatSize(f.size)}</span>` +
+    `<button class="remove" title="Remove" onclick="removeFile(${i})">&times;</button></li>`).join('');
+  btnTranscribe.disabled = n === 0;
+  const verb = batchActive() ? 'Add to queue' : 'Transcribe';
+  btnTranscribe.textContent = n > 1 ? `${verb} (${n} files)` : verb;
+  btnClear.style.display = n ? '' : 'none';
 }
 
 function formatSize(b) {
@@ -355,77 +420,295 @@ document.getElementById('optBeam').addEventListener('input', function() {
 // Transcribe
 btnTranscribe.addEventListener('click', startTranscription);
 
+// Every run is a batch (a single file is a batch of one). While a batch is still running,
+// Transcribe adds the newly picked files to it.
 function startTranscription() {
-  if (!selectedFile) return;
-  const fd = new FormData();
-  fd.append('file', selectedFile);
-  fd.append('model_size', document.getElementById('optModel').value);
-  fd.append('language', document.getElementById('optLanguage').value);
-  fd.append('compute_type', document.getElementById('optCompute').value);
-  fd.append('word_timestamps', document.getElementById('toggleWordTs').dataset.val);
-  fd.append('output_format', document.getElementById('optFormat').value);
-  fd.append('beam_size', document.getElementById('optBeam').value);
+  if (!selectedFiles.length) return;
+  if (!batchActive()) {
+    showBatch({ id: null, items: [], local: true, ahead: 0, settled: 0, startedAt: Date.now() });
+    currentJobId = null;
+    resultSection.classList.remove('active');
+  }
+  selectedFiles.forEach(f => batch.items.push({ name: f.name, size: f.size, file: f, upload: null }));
+  selectedFiles = [];
+  renderSelection();
+  renderQueue();
+  if (!batch.uploading) uploadQueued(batch);
+}
 
-  btnTranscribe.disabled = true;
-  resultSection.classList.remove('active');
-  progressSection.classList.add('active');
-  progressBar.style.width = '0%';
+function showBatch(b) {
+  clearInterval(pollTimer);
+  batch = b;
+  queueList.innerHTML = '';
   progressBar.classList.remove('indeterminate');
-  progressStatus.textContent = 'Uploading...';
-
-  elapsedStart = Date.now();
-  elapsedTimer = setInterval(() => {
-    const s = Math.floor((Date.now() - elapsedStart) / 1000);
-    progressElapsed.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
-  }, 1000);
-
-  fetch(API + '/transcribe', { method: 'POST', body: fd })
-    .then(r => r.json())
-    .then(d => {
-      if (d.error) throw new Error(d.error);
-      currentJobId = d.job_id;
-      progressStatus.textContent = 'Processing...';
-      pollTimer = setInterval(pollStatus, 1000);
-    })
-    .catch(e => {
-      progressStatus.textContent = 'Error: ' + e.message;
-      clearInterval(elapsedTimer);
-      btnTranscribe.disabled = false;
-    });
+  progressSection.classList.add('active');
+  startElapsed(b.startedAt);
+  renderQueue();
 }
 
-function pollStatus() {
-  if (!currentJobId) return;
-  fetch(API + '/status/' + currentJobId)
-    .then(r => r.json())
-    .then(d => {
-      if (d.status === 'processing') {
-        const p = d.progress || 0;
-        progressBar.classList.remove('indeterminate');
-        progressBar.style.width = p + '%';
-        progressStatus.textContent = d.status_text || 'Processing...';
-      } else if (d.status === 'completed') {
-        clearInterval(pollTimer);
-        clearInterval(elapsedTimer);
-        progressBar.style.width = '100%';
-        progressStatus.textContent = 'Complete!';
-        loadResult(currentJobId);
-        loadHistory();
-      } else if (d.status === 'error') {
-        clearInterval(pollTimer);
-        clearInterval(elapsedTimer);
-        progressStatus.textContent = 'Error: ' + (d.error || 'Unknown error');
-        btnTranscribe.disabled = false;
-      } else if (d.status === 'cancelled') {
-        clearInterval(pollTimer);
-        clearInterval(elapsedTimer);
-        progressStatus.textContent = 'Cancelled';
-        progressSection.classList.remove('active');
-        btnTranscribe.disabled = false;
-        loadHistory();
+function batchDone(b) {
+  return !b.uploading && b.items.length > 0 && b.items.every(i => TERMINAL.includes(itemState(i)));
+}
+
+function batchActive() {
+  return !!batch && !batch.cancelled && !batchDone(batch);
+}
+
+// One file per request so each shows its own upload progress; the server starts on the
+// first file while the rest are still uploading.
+async function uploadQueued(b) {
+  b.uploading = true;
+  let it;
+  while (!b.cancelled && (it = b.items.find(i => i.file && i.upload == null && !i.skipped))) {
+    try {
+      const d = await uploadFile(b, it);
+      it.jobId = d.job_id;
+      it.job = { id: d.job_id, status: 'pending', progress: 0 };   // until the next poll fills it in
+      if (!b.id) {
+        b.id = d.batch_id;
+        if (b === batch) { rememberBatch(b.id); startPolling(); }
       }
+    } catch (e) {
+      if (e.aborted) it.skipped = true;
+      else it.uploadError = e.message;
+    }
+    it.file = null;
+    if (b === batch) renderQueue();
+  }
+  b.items.forEach(i => { if (i.file) { i.skipped = true; i.file = null; } });  // left behind by Cancel
+  b.uploading = false;
+  if (b !== batch) return;
+  renderQueue();
+  if (b.id) pollBatch(); else settle(b);
+}
+
+function uploadFile(b, it) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('file', it.file);
+    if (b.id) fd.append('batch_id', b.id);
+    fd.append('model_size', document.getElementById('optModel').value);
+    fd.append('language', document.getElementById('optLanguage').value);
+    fd.append('compute_type', document.getElementById('optCompute').value);
+    fd.append('word_timestamps', document.getElementById('toggleWordTs').dataset.val);
+    fd.append('output_format', document.getElementById('optFormat').value);
+    fd.append('beam_size', document.getElementById('optBeam').value);
+
+    const xhr = new XMLHttpRequest();
+    b.xhr = xhr;
+    it.upload = 0;
+    if (b === batch) renderQueue();
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      const pct = Math.round(e.loaded / e.total * 100);
+      if (pct !== it.upload) { it.upload = pct; if (b === batch) renderQueue(); }
+    };
+    xhr.onload = () => {
+      let d = {};
+      try { d = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status === 202 && d.job_id) resolve(d);
+      else reject(new Error(d.error || 'Upload failed (HTTP ' + xhr.status + ')'));
+    };
+    xhr.onerror = () => reject(new Error('Upload failed (network error)'));
+    xhr.onabort = () => reject(Object.assign(new Error('Cancelled'), { aborted: true }));
+    xhr.open('POST', API + '/transcribe');
+    xhr.send(fd);
+  });
+}
+
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(pollBatch, 1500);
+  pollBatch();
+}
+
+function pollBatch() {
+  const b = batch;
+  if (!b || !b.id) return;
+  fetch(API + '/batch/' + b.id)
+    .then(r => r.json())
+    .then(d => {
+      if (b !== batch || !d.jobs) return;
+      b.ahead = d.queued_ahead || 0;
+      d.jobs.forEach(j => {
+        let it = b.items.find(i => i.jobId === j.id);
+        if (!it) {
+          if (b.local) return;  // a file whose upload response hasn't come back yet
+          it = { name: j.original_filename, jobId: j.id };
+          b.items.push(it);
+        }
+        it.job = j;
+      });
+      renderQueue();
+      settle(b);
+    })
+    .catch(() => {});
+}
+
+// Refresh history as files finish, and wrap up once every file has.
+function settle(b) {
+  const settled = b.items.filter(i => TERMINAL.includes(itemState(i))).length;
+  if (settled !== b.settled) { b.settled = settled; loadHistory(historyPage); }
+  if (!batchDone(b)) return;
+  clearInterval(pollTimer);
+  clearInterval(elapsedTimer);
+  if (!b.local) {
+    const ends = b.items.map(i => i.job && parseUtc(i.job.completed_at)).filter(Boolean);
+    if (ends.length) showElapsed(Math.max(...ends) - b.startedAt);
+  }
+  if (recallBatch() === b.id) forgetBatch();
+  renderSelection();
+  const only = b.items.length === 1 && b.items[0];
+  if (b.local && only.job && only.job.status === 'completed') viewJob(only.jobId);
+}
+
+function itemState(it) {
+  if (it.job) return it.job.status;
+  if (it.skipped) return 'cancelled';
+  if (it.uploadError) return 'error';
+  if (it.upload != null) return 'uploading';
+  return 'waiting';
+}
+
+function itemError(it) {
+  return (it.job && it.job.error) || it.uploadError || 'Unknown error';
+}
+
+function renderQueue() {
+  const b = batch;
+  if (!b) return;
+  const n = b.items.length;
+  const states = b.items.map(itemState);
+  b.items.forEach(renderItem);
+  queueList.style.display = n > 1 ? '' : 'none';
+
+  const count = s => states.filter(x => x === s).length;
+  const done = count('completed'), failed = count('error'), cancelled = count('cancelled');
+  queueTitle.textContent = n > 1 ? `Batch · ${done} of ${n} transcribed` : 'Progress';
+
+  const pct = n ? b.items.reduce((t, it, i) =>
+    t + (TERMINAL.includes(states[i]) ? 100 : it.job ? it.job.progress || 0 : 0), 0) / n : 0;
+  progressBar.style.width = pct + '%';
+
+  const pi = states.indexOf('processing'), ui = states.indexOf('uploading');
+  let text;
+  if (batchDone(b)) {
+    text = n === 1
+      ? { completed: 'Complete!', cancelled: 'Cancelled', error: 'Error: ' + itemError(b.items[0]) }[states[0]]
+      : [`${done} transcribed`, failed && `${failed} failed`, cancelled && `${cancelled} cancelled`].filter(Boolean).join(' · ');
+  } else if (pi >= 0) {
+    const st = b.items[pi].job.status_text || 'Processing...';
+    text = n === 1 ? st : `File ${pi + 1} of ${n} · ${st}`;
+  } else if (ui >= 0) {
+    text = (n === 1 ? 'Uploading' : `Uploading ${b.items[ui].name}`) + ` — ${b.items[ui].upload}%`;
+  } else if (states.includes('pending')) {
+    text = b.ahead ? `Queued behind ${b.ahead} other file${b.ahead === 1 ? '' : 's'}` : 'Queued...';
+  } else {
+    text = b.cancelled ? 'Cancelling...' : 'Starting...';
+  }
+  progressStatus.textContent = text;
+  btnCancel.style.display = batchDone(b) ? 'none' : '';
+  zipGroup.style.display = n > 1 && done > 0 ? '' : 'none';
+}
+
+const PILL_LABEL = { pending: 'queued', waiting: 'waiting' };
+
+function renderItem(it, i) {
+  if (!it.el) {
+    it.el = document.createElement('li');
+    it.el.className = 'queue-item';
+    it.el.innerHTML = '<span class="status-pill"></span><span class="name"></span><span class="actions"></span>' +
+      '<div class="mini-track"><div class="mini-fill"></div></div><span class="detail"></span>';
+    queueList.appendChild(it.el);
+  }
+  const q = sel => it.el.querySelector(sel);
+  const st = itemState(it), j = it.job;
+  q('.status-pill').className = 'status-pill ' + st;
+  q('.status-pill').textContent = PILL_LABEL[st] || st;
+  q('.name').textContent = it.name;
+  q('.name').title = it.name;
+
+  let detail, bar = null;
+  if (st === 'waiting') detail = formatSize(it.size) + ' · waiting to upload';
+  else if (st === 'uploading') { detail = `Uploading ${it.upload}%`; bar = it.upload; }
+  else if (st === 'pending') detail = 'Queued';
+  else if (st === 'processing') { detail = j.status_text || 'Processing...'; bar = j.progress || 0; }
+  else if (st === 'completed') {
+    const speed = j.duration && j.transcription_time ? (j.duration / j.transcription_time).toFixed(1) + 'x realtime' : '';
+    detail = [formatDuration(j.duration), j.detected_language, speed].filter(Boolean).join(' · ');
+  }
+  else if (st === 'error') detail = itemError(it);
+  else detail = 'Cancelled';
+  q('.detail').textContent = detail;
+  q('.mini-track').style.display = bar == null ? 'none' : '';
+  if (bar != null) q('.mini-fill').style.width = bar + '%';
+  it.el.classList.toggle('viewing', !!it.jobId && it.jobId === currentJobId);
+
+  // Rebuild buttons only when the state changes, so a click isn't swallowed by a re-render
+  if (it.renderedState !== st) {
+    it.renderedState = st;
+    q('.actions').innerHTML = st === 'completed'
+      ? `<button class="btn btn-secondary btn-sm" onclick="viewJob('${it.jobId}')">View</button>`
+      : TERMINAL.includes(st) ? ''
+      : `<button class="btn btn-danger btn-sm" title="Cancel this file" onclick="cancelItem(${i})">&times;</button>`;
+  }
+}
+
+function cancelItem(i) {
+  const it = batch && batch.items[i];
+  if (!it) return;
+  if (it.jobId) fetch(API + '/cancel/' + it.jobId, { method: 'POST' }).then(pollBatch);
+  else if (it.upload != null) batch.xhr && batch.xhr.abort();   // the file uploading right now
+  else { it.skipped = true; it.file = null; }
+  renderQueue();
+}
+
+// Opens a batch from History, or the one this tab was running before a reload
+function openBatch(id, onlyIfRunning) {
+  if (batch && batch.id === id) { progressSection.scrollIntoView({ behavior: 'smooth' }); return; }
+  fetch(API + '/batch/' + id)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => {
+      if (!d || !d.jobs) { if (onlyIfRunning) forgetBatch(); return; }
+      const items = d.jobs.map(j => ({ name: j.original_filename, jobId: j.id, job: j }));
+      const b = { id, items, local: false, ahead: d.queued_ahead || 0, settled: -1, startedAt: parseUtc(d.jobs[0].created_at) };
+      if (onlyIfRunning && batchDone(b)) { forgetBatch(); return; }
+      if (batchActive() && batch.local && batch.uploading && batch.id !== id &&
+          !confirm('Files are still uploading in the current batch. Leave it uploading in the background and open this one?')) return;
+      showBatch(b);
+      settle(b);
+      if (!batchDone(b)) { rememberBatch(id); startPolling(); }
+      renderSelection();
+      if (!onlyIfRunning) progressSection.scrollIntoView({ behavior: 'smooth' });
     });
 }
+
+function downloadBatch(fmt) {
+  if (!batch || !batch.id) return;
+  window.open(API + '/batch/' + batch.id + '/download/' + fmt, '_blank');
+}
+
+function startElapsed(t0) {
+  clearInterval(elapsedTimer);
+  const tick = () => showElapsed(Date.now() - t0);
+  tick();
+  elapsedTimer = setInterval(tick, 1000);
+}
+
+function showElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  progressElapsed.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+}
+
+// The server stores UTC without a zone ('2026-10-22 17:03:00' or '2026-10-22T17:03:00.123456')
+function parseUtc(s) {
+  return s ? Date.parse(s.replace(' ', 'T') + 'Z') : null;
+}
+
+// Remember the running batch so a reload picks it back up
+function rememberBatch(id) { try { localStorage.setItem('whisperBatch', id); } catch (e) {} }
+function forgetBatch() { try { localStorage.removeItem('whisperBatch'); } catch (e) {} }
+function recallBatch() { try { return localStorage.getItem('whisperBatch'); } catch (e) { return null; } }
 
 function loadResult(jobId) {
   fetch(API + '/result/' + jobId)
@@ -468,7 +751,7 @@ function loadResult(jobId) {
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');   // also safe inside title="..."
 }
 
 function formatDuration(s) {
@@ -483,10 +766,13 @@ function downloadResult(fmt) {
   window.open(API + '/download/' + currentJobId + '/' + fmt, '_blank');
 }
 
-// Cancel
+// Cancel the whole batch: stop uploading, drop queued files, stop the one transcribing
 btnCancel.addEventListener('click', () => {
-  if (!currentJobId) return;
-  fetch(API + '/cancel/' + currentJobId, { method: 'POST' });
+  if (!batch) return;
+  batch.cancelled = true;
+  if (batch.xhr) batch.xhr.abort();
+  if (batch.id) fetch(API + '/batch/' + batch.id + '/cancel', { method: 'POST' }).then(pollBatch);
+  renderQueue();
 });
 
 // Copy
@@ -501,13 +787,14 @@ btnCopy.addEventListener('click', () => {
 // New transcription
 btnNew.addEventListener('click', () => {
   currentJobId = null;
-  selectedFile = null;
-  fileInput.value = '';
-  fileInfo.style.display = 'none';
-  uploadZone.classList.remove('has-file');
-  btnTranscribe.disabled = true;
-  progressSection.classList.remove('active');
+  selectedFiles = [];
   resultSection.classList.remove('active');
+  if (!batchActive()) {   // a running batch stays on screen
+    batch = null;
+    progressSection.classList.remove('active');
+  }
+  renderSelection();
+  renderQueue();
 });
 
 // History
@@ -543,6 +830,9 @@ function loadHistory(page) {
           html += `<button title="View" onclick="viewJob('${j.id}')">&#128065;</button>`;
           html += `<button title="Download SRT" onclick="window.open('${API}/download/${j.id}/srt')">&#11015;</button>`;
         }
+        if (j.batch_size > 1) {
+          html += `<button title="Open its batch (${j.batch_size} files)" onclick="openBatch('${j.batch_id}')">&#128230;</button>`;
+        }
         html += `<button title="Delete" onclick="deleteJob('${j.id}')">&#128465;</button>`;
         html += '</div></td></tr>';
       });
@@ -562,6 +852,7 @@ function loadHistory(page) {
 function viewJob(id) {
   currentJobId = id;
   loadResult(id);
+  renderQueue();
   resultSection.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -573,6 +864,8 @@ function deleteJob(id) {
 
 // Init
 loadHistory();
+const savedBatch = recallBatch();
+if (savedBatch) openBatch(savedBatch, true);
 </script>
 </body>
 </html>

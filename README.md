@@ -20,10 +20,12 @@ All services running on the home server, organized for deployment on any Ubuntu 
 │  :8010  🎥  VLC Stream         (directory indicator)│
 │  :8011  🔐  Proton VPN Portal  (Python/Flask)       │
 │  :8012  📄  PDF Portal         (Flask+WeasyPrint)   │
+│  :8384  🔁  Sync Drive         (Syncthing/Docker)    │
+│  :445   💾  Server Drive       (Samba/SMB → Finder)  │
 │                                                     │
 │  Services managed by systemd                        │
 │  VLC is shown as a non-clickable listener indicator │
-│  Ollama GUI runs via Docker Compose                 │
+│  Ollama GUI and Sync Drive run via Docker Compose   │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -56,8 +58,9 @@ The deploy script will:
 1. Install system packages (Python 3, Chrome, Docker, ffmpeg, poppler)
 2. Install Python dependencies for each service
 3. Build and start Ollama GUI via Docker Compose
-4. Create and enable systemd units for all services
-5. Start everything
+4. Start Sync Drive via Docker Compose
+5. Create and enable systemd units for all services
+6. Start everything
 
 ## Services
 
@@ -75,6 +78,8 @@ The deploy script will:
 | 8010 | VLC Stream | Listener indicator only | external |
 | 8011 | [Proton VPN Portal](vpn-portal/) | Python/Flask + Proton CLI | `vpn-portal/` |
 | 8012 | [PDF Portal](https://github.com/lekandigital/pdf-gen) | Python/Flask + WeasyPrint | external: `lekandigital/pdf-gen` |
+| 8384 | [Sync Drive](sync-drive/) | Syncthing + Docker | `sync-drive/` |
+| 445 | [Server Drive](server-drive/) | Samba/SMB + Avahi | `server-drive/` |
 
 PDF Portal is an independent project. Deploy it separately from `lekandigital/pdf-gen`; this repository only links to and monitors its `pdf-portal.service`. Port 8012 is used on this host because 8009 is occupied by X-Bot Portal and 8010–8011 are already reserved.
 
@@ -83,6 +88,89 @@ git clone https://github.com/lekandigital/pdf-gen.git /home/<username>/pdf-gen
 cd /home/<username>/pdf-gen
 sudo ./deploy.sh <username> /home/<username>/pdf-gen 8012
 ```
+
+## Finder Drive Setup
+
+[Server Drive](server-drive/) mounts the **entire server filesystem** as a native volume in the
+macOS Finder sidebar under Locations, so the whole box can be browsed and dragged onto like an
+external disk. It uses SMB, so nothing needs installing on the Mac.
+
+```text
+smb://o@<server-ip>/Server   →   /Volumes/Server
+```
+
+Server setup:
+
+```bash
+sudo ./server-drive/setup-server-drive.sh o
+```
+
+Mac setup:
+
+```bash
+./server-drive/mac/setup-server-drive-mac.sh
+```
+
+Finder asks for the Samba password once — tick *Remember this password in my keychain*. The Mac
+side then installs a LaunchAgent that mounts the drive at login and after network changes, and
+is a silent no-op when off the home network.
+
+Samba keeps its own password database and cannot read the Unix password hash, so the share
+password is separate from the Linux login/sudo password. Change it with `sudo smbpasswd o`.
+
+Samba binds by CIDR to `lo`, the LAN subnet, and the Tailscale range, and is deliberately never
+bound to the ProtonVPN interfaces. `check-server-drive.sh` asserts this. Off the home network
+the drive follows you over Tailscale; a watchdog restarts `smbd` when the tunnel address
+appears, since `bind interfaces only` only binds what exists at startup.
+
+Deleting over SMB is permanent — Finder's *Move to Trash* unlinks the file rather than trashing
+it. Because this share runs as root over the whole filesystem, deletes are intercepted into
+`/.recycle/<user>/` and pruned after 30 days.
+
+Server Drive and Sync Drive solve different problems and coexist. Server Drive *reaches* the
+whole server over the network; Sync Drive *mirrors* one folder onto local disk. See
+[server-drive/README.md](server-drive/README.md) for the comparison.
+
+## Finder Sync Setup
+
+Sync Drive uses Syncthing so this Mac Finder folder:
+
+```text
+$HOME/Server Drive
+```
+
+syncs to this server folder:
+
+```text
+/home/REDACTED_USER/file-manager/drive
+```
+
+The server Syncthing UI is available on the private network at:
+
+```text
+http://<server-ip>:8384
+```
+
+Mac setup:
+
+```bash
+mkdir -p "$HOME/Server Drive"
+brew install syncthing
+brew services start syncthing
+open "$HOME/Server Drive"
+open http://127.0.0.1:8384
+```
+
+Server setup:
+
+```bash
+sudo mkdir -p /home/REDACTED_USER/syncthing/config /home/REDACTED_USER/file-manager/drive
+sudo chown -R o:o /home/REDACTED_USER/syncthing /home/REDACTED_USER/file-manager
+cd /home/REDACTED_USER/server-services/sync-drive
+docker compose up -d
+```
+
+After pairing the Mac and server in Syncthing, share server folder `/data/drive` and accept it on the Mac at `$HOME/Server Drive`. Use `Send & Receive` on both sides for the closest Google Drive-like behavior. Pin the folder to the Finder sidebar manually by dragging `$HOME/Server Drive` into the Finder sidebar.
 
 ## Integrated Drive storage and security
 
@@ -97,7 +185,7 @@ This is a powerful LAN administration tool. Do not expose it publicly without VP
 - **OS:** Ubuntu 22.04 LTS
 - **Python:** 3.10+
 - **Node.js:** 20.20.0 (via nvm)
-- **Docker:** 28+ (for Ollama GUI)
+- **Docker:** 28+ (for Ollama GUI and Sync Drive)
 - **GPU:** NVIDIA with CUDA (for Whisper + OCR GPU acceleration)
 - **RAM:** 8GB+ recommended (Whisper large-v3 model uses ~3GB VRAM)
 - **Disk:** ~1GB extra for ML Image Studio model weights (auto-downloaded)
@@ -144,6 +232,7 @@ See [GIT_COMMIT_SYNCING_INSTRUCTIONS.md](GIT_COMMIT_SYNCING_INSTRUCTIONS.md) for
 server-services/
 ├── README.md                    ← You are here
 ├── deploy.sh                    ← Master deploy script
+├── scripts/                     ← Sync Drive setup and health helpers
 ├── .env.example                 ← Environment variable template
 ├── .gitignore
 │
@@ -162,6 +251,11 @@ server-services/
 │   ├── Dockerfile
 │   ├── package.json
 │   └── README.md               (original upstream docs)
+│
+├── sync-drive/                  ← :8384
+│   ├── compose.yml
+│   ├── README.md
+│   └── .gitignore
 │
 ├── twitter-bot/                 ← :8003 (+ :8001 portal)
 │   ├── dashboard.py

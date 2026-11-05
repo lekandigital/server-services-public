@@ -1,0 +1,15 @@
+[Unit]
+Description=RustDesk Auto Display Switcher (HDMI ↔ Headless)
+After=gdm.service gdm3.service
+FailureAction=none
+
+[Service]
+Type=oneshot
+# 3 second debounce so rapid USB plug/unplug events don't thrash
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/bin/rustdesk-display-auto-switch
+TimeoutStartSec=120
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

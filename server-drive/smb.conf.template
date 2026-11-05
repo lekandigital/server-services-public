@@ -1,0 +1,111 @@
+#
+# Server Drive — Samba configuration
+#
+# Rendered to /etc/samba/smb.conf by setup-server-drive.sh.
+# Placeholders: __LAN_CIDR__  __SHARE_USER__  __SERVER_NAME__
+#
+# Exposes the entire filesystem as a single SMB share so macOS can mount it
+# in Finder under Locations. LAN-only; deliberately never bound to the
+# ProtonVPN interfaces.
+#
+
+[global]
+   server string = __SERVER_NAME__ Server Drive
+   workgroup = WORKGROUP
+   security = user
+   map to guest = never
+
+   server min protocol = SMB3
+   client min protocol = SMB3
+   smb encrypt = desired
+
+   # Bind by device name (globs allowed), not CIDR: a CIDR entry binds only the
+   # FIRST interface in that subnet, so with wifi (wlp2s0) and ethernet (enp4s0)
+   # both on the LAN, smbd bound wifi alone and ethernet was unreachable.
+   # A missing device (no Anker dock plugged in) is skipped, not fatal.
+   # proton0, ipv6leakintrf0, docker/virbr bridges match none of these, so the
+   # share is never reachable over the VPN tunnel. tailscale0 is not listed:
+   # smbd cannot bind a point-to-point tun anyway — off-LAN clients reach the
+   # LAN address through the box's advertised REDACTED_LAN_SUBNET subnet route.
+   interfaces = lo en* wl*
+   bind interfaces only = yes
+   hosts allow = 127.0.0.1 __LAN_CIDR__ 100.64.0.0/10
+   hosts deny = ALL
+
+   # Multichannel (on by default since 4.15) advertises every bound address to
+   # the Mac, which then opens extra channels over the box's flaky wifi even
+   # when it connected over ethernet — a wifi wedge then stalls the session.
+   server multi channel support = no
+
+   # No printing, no NetBIOS — Avahi/Bonjour handles discovery for macOS.
+   load printers = no
+   printing = bsd
+   printcap name = /dev/null
+   disable spoolss = yes
+   disable netbios = yes
+
+   # macOS Finder compatibility. Order matters: catia -> fruit -> streams_xattr.
+   # `recycle` last so deletes are intercepted after the macOS layers run.
+   vfs objects = catia fruit streams_xattr recycle
+   fruit:metadata = stream
+   fruit:model = MacPro7,1
+   fruit:posix_rename = yes
+   fruit:veto_appledouble = no
+   fruit:wipe_intentionally_left_blank_rfork = yes
+   fruit:delete_empty_adfiles = yes
+
+   # Deleting over SMB is permanent and immediate — Finder's "Move to Trash"
+   # unlinks the file rather than trashing it, and this share runs as root over
+   # the whole filesystem. Intercept deletes into a hidden bin instead.
+   #
+   # Caveat: recycling is a rename, so it cannot cross a filesystem boundary.
+   # Deletes on /media/o/IMAGES (exfat) are still permanent — only / is covered.
+   recycle:repository = /.recycle/%U
+   recycle:keeptree = yes
+   recycle:versions = yes
+   # Touch both times so age in the bin means "time since deletion", which is
+   # what prune-recycle.sh keys off.
+   recycle:touch = yes
+   recycle:touch_mtime = yes
+   # Anything over 500MB is deleted outright — the root filesystem is tight and
+   # a recycled 40GB video would fill it.
+   recycle:maxsize = 524288000
+   recycle:exclude = *.tmp|*.temp|*.o|*.obj|*.pyc|*.part|*.crdownload|~$*|.DS_Store|Thumbs.db
+   recycle:exclude_dir = /tmp|/var/tmp|/var/cache|/proc|/sys|/dev|/run|node_modules|__pycache__|.git|.cache
+
+   # Throughput
+   use sendfile = yes
+   aio read size = 1
+   aio write size = 1
+   min receivefile size = 16384
+
+   log file = /var/log/samba/log.%m
+   max log size = 1000
+   logging = file
+
+[Server]
+   comment = Entire __SERVER_NAME__ filesystem
+   path = /
+   browseable = yes
+   read only = no
+   guest ok = no
+   valid users = __SHARE_USER__
+
+   # Full read/write everywhere. inherit owner is the important part: a file
+   # dropped into /home/REDACTED_USER/... ends up owned by o, not root, so services running
+   # as o can still touch it.
+   #
+   # Do NOT add `inherit permissions = yes`: on 4.15 it calls the POSIX ACL
+   # setter on macOS metadata streams (fruit/streams_xattr) and smbd PANICs
+   # (assert !fsp_is_alternate_stream), killing the Finder session.
+   force user = root
+   force group = root
+   inherit owner = unix only
+   create mask = 0644
+   directory mask = 0755
+
+   # Durable handles let the Mac reclaim its open files after a network blip
+   # instead of dropping them. Samba only grants them with these two off.
+   durable handles = yes
+   kernel share modes = no
+   posix locking = no

@@ -39,6 +39,12 @@ export const useAppStore = defineStore('app', {
     globalLoading: false,
     mobileNavOpen: false,
     serverOnline: true,
+    sudoPrompt: null as {
+      title: string
+      message: string
+      resolve: (password: string | null) => void
+    } | null,
+    sudoPromptError: '' as string,
   }),
   actions: {
     setSection(section: NavSection, options: { replace?: boolean } = {}) {
@@ -90,6 +96,30 @@ export const useAppStore = defineStore('app', {
     clearDiagnostics() {
       this.diagnostics = []
       this.lastApiError = null
+    },
+    requestSudoPassword(options: { title?: string; message?: string } = {}): Promise<string | null> {
+      // If a prompt is already open, cancel it before opening a new one.
+      if (this.sudoPrompt) this.sudoPrompt.resolve(null)
+      this.sudoPromptError = ''
+      return new Promise<string | null>((resolve) => {
+        this.sudoPrompt = {
+          title: options.title || 'Sudo password required',
+          message: options.message || 'This action needs elevated permissions on the server. Enter the sudo password to continue.',
+          resolve,
+        }
+      })
+    },
+    submitSudoPassword(password: string) {
+      const prompt = this.sudoPrompt
+      this.sudoPrompt = null
+      this.sudoPromptError = ''
+      prompt?.resolve(password)
+    },
+    cancelSudoPassword() {
+      const prompt = this.sudoPrompt
+      this.sudoPrompt = null
+      this.sudoPromptError = ''
+      prompt?.resolve(null)
     },
   },
 })

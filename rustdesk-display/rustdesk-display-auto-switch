@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# rustdesk-display-auto-switch
+# ─────────────────────────────────────────────────────────────
+# Automatically toggles between real-GPU and dummy-headless
+# Xorg configs based on whether a physical monitor is connected.
+#
+# The key challenge: when the dummy Xorg driver is active, the
+# real GPU can't detect monitors via DRM/sysfs. We solve this by
+# checking for the USB display hub presence (Anker hub or similar)
+# AND by looking at DRM connector EDID data.
+#
+# Triggered by:
+#   - Systemd timer every 15 seconds
+#   - udev hotplug events (when real GPU is active)
+#   - udev USB events (when display hub is plugged/unplugged)
+#   - Manual:  sudo rustdesk-display-auto-switch
+#
+# Logs:  journalctl -t rustdesk-display-switch
+# ─────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+LOGGER_TAG="rustdesk-display-switch"
+DUMMY_TEMPLATE="/etc/rustdesk/xorg.conf"
+XORG_CONF="/etc/X11/xorg.conf"
+LOCKFILE="/run/rustdesk-display-switch.lock"
+
+# USB vendor:product IDs for known display hubs/adapters.
+# Add more here if you use a different hub.
+DISPLAY_HUB_IDS=(
+    "291a:83a2"   # Anker 364 USB C Hub (10-in-1, Dual 4K HDMI)
+)
+
+log() { logger -t "$LOGGER_TAG" "$*"; }
+
+# ── Locking ────────────────────────────────────────────────
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+    exit 0
+fi
+
+# ── Determine current mode ────────────────────────────────
+current_mode="hdmi"
+if [[ -f "$XORG_CONF" ]] && grep -q "dummy" "$XORG_CONF" 2>/dev/null; then
+    current_mode="headless"
+fi
+
+# ── Detect physical displays ──────────────────────────────
+has_physical_display=false
+
+# METHOD 1: Check DRM connectors for EDID data.
+# When the real GPU is driving X, connected monitors have EDID > 0 bytes.
+# When the dummy driver is active, EDID is always 0 (GPU can't probe).
+for status_file in /sys/class/drm/card*-*/status; do
+    [[ -f "$status_file" ]] || continue
+    connector_dir="$(dirname "$status_file")"
+    connector_name="$(basename "$connector_dir")"
+    state="$(cat "$status_file" 2>/dev/null || echo "unknown")"
+
+    if [[ "$state" == "connected" ]]; then
+        edid_file="$connector_dir/edid"
+        edid_size=0
+        if [[ -f "$edid_file" ]]; then
+            edid_size=$(wc -c < "$edid_file" 2>/dev/null || echo 0)
+        fi
+
+        if [[ "$edid_size" -gt 0 ]]; then
+            log "Real display on $connector_name (EDID: ${edid_size} bytes)"
+            has_physical_display=true
+            break
+        fi
+    fi
+done
+
+# METHOD 2: When in headless mode, the GPU can't probe connectors.
+# Fall back to checking if a known USB display hub is connected.
+# If the hub is plugged in, a monitor is very likely attached.
+if [[ "$current_mode" == "headless" ]] && ! $has_physical_display; then
+    for hub_id in "${DISPLAY_HUB_IDS[@]}"; do
+        vendor="${hub_id%%:*}"
+        product="${hub_id##*:}"
+        for dev_dir in /sys/bus/usb/devices/*/idVendor; do
+            dev_parent="$(dirname "$dev_dir")"
+            dev_vendor="$(cat "$dev_dir" 2>/dev/null || echo "")"
+            dev_product="$(cat "$dev_parent/idProduct" 2>/dev/null || echo "")"
+            if [[ "$dev_vendor" == "$vendor" ]] && [[ "$dev_product" == "$product" ]]; then
+                log "Display hub detected (USB $vendor:$product) while in headless mode"
+                has_physical_display=true
+                break 2
+            fi
+        done
+    done
+fi
+
+# ── Act on detection ──────────────────────────────────────
+
+if $has_physical_display && [[ "$current_mode" == "headless" ]]; then
+    log "▶ Switching to HDMI mode (display detected)"
+    rm -f "$XORG_CONF"
+    systemctl restart gdm3 2>/dev/null || systemctl restart gdm 2>/dev/null || true
+    sleep 5
+    systemctl restart rustdesk 2>/dev/null || true
+    log "✓ Switched to HDMI mode"
+
+elif ! $has_physical_display && [[ "$current_mode" == "hdmi" ]]; then
+    log "▶ Switching to headless mode (no display detected)"
+    if [[ -f "$DUMMY_TEMPLATE" ]]; then
+        install -m 0644 "$DUMMY_TEMPLATE" "$XORG_CONF"
+        systemctl restart gdm3 2>/dev/null || systemctl restart gdm 2>/dev/null || true
+        sleep 5
+        systemctl restart rustdesk 2>/dev/null || true
+        log "✓ Switched to headless mode"
+    else
+        log "ERROR: Dummy template not found at $DUMMY_TEMPLATE!"
+        exit 1
+    fi
+fi

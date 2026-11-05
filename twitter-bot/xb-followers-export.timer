@@ -1,0 +1,19 @@
+[Unit]
+Description=Hourly X followers-list export
+
+[Timer]
+# Hourly. A full run is 10 requests and ~3.5 min against a 1000-per-15-min budget, so
+# the cost is negligible and the benefit is that a new follower shows up within the
+# hour instead of the next day. Drop to OnCalendar=*:0/30 for 30 minutes if that is
+# ever worth the extra churn against the 18MB queue.json.
+OnCalendar=hourly
+# Enough jitter that runs never land on a clean :00 alongside everything else, but small
+# enough that the hourly cadence still means hourly.
+RandomizedDelaySec=4m
+# Catch up after a reboot rather than silently skipping the missed hour.
+Persistent=true
+AccuracySec=1m
+Unit=xb-followers-export.service
+
+[Install]
+WantedBy=timers.target

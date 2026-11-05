@@ -19,6 +19,7 @@ export const useTorrentStore = defineStore('torrents', {
     torrents: [] as TorrentItem[],
     filter: 'all' as 'all' | 'active' | 'completed' | 'stopped',
     search: '',
+    sort: 'added_desc' as 'added_desc' | 'added_asc' | 'name_asc' | 'name_desc' | 'status' | 'progress_desc',
     loading: false,
     error: null as string | null,
   }),
@@ -32,7 +33,14 @@ export const useTorrentStore = defineStore('torrents', {
         const q = state.search.toLowerCase()
         items = items.filter((t) => t.name.toLowerCase().includes(q))
       }
-      return items
+      return [...items].sort((a, b) => {
+        if (state.sort === 'added_asc') return (a.addedDate || 0) - (b.addedDate || 0)
+        if (state.sort === 'name_asc') return a.name.localeCompare(b.name)
+        if (state.sort === 'name_desc') return b.name.localeCompare(a.name)
+        if (state.sort === 'status') return a.status.localeCompare(b.status)
+        if (state.sort === 'progress_desc') return (b.progress || 0) - (a.progress || 0)
+        return (b.addedDate || 0) - (a.addedDate || 0)
+      })
     },
     stats(state) {
       const active = state.torrents.filter((t) => t.status === 'downloading').length
@@ -42,8 +50,8 @@ export const useTorrentStore = defineStore('torrents', {
     },
   },
   actions: {
-    async load() {
-      this.loading = true
+    async load(background = false) {
+      if (!background) this.loading = true
       this.error = null
       try {
         const data = await listTorrents()
@@ -52,36 +60,36 @@ export const useTorrentStore = defineStore('torrents', {
         this.error = err instanceof Error ? err.message : 'Failed to load torrents'
         useAppStore().recordApiError(err as ApiError)
       } finally {
-        this.loading = false
+        if (!background) this.loading = false
       }
     },
     async addMagnet(magnet: string) {
       await addTorrents([magnet])
       useAppStore().toast('Torrent added', 'success')
-      await this.load()
+      await this.load(true)
     },
     async addMagnets(magnets: string[]) {
       await addTorrents(magnets)
       useAppStore().toast(`Added ${magnets.length} torrent(s)`, 'success')
-      await this.load()
+      await this.load(true)
     },
     async upload(file: File) {
       await uploadTorrent(file)
       useAppStore().toast('Torrent uploaded', 'success')
-      await this.load()
+      await this.load(true)
     },
-    async pause(id: number) { await pauseTorrent(id); await this.load() },
-    async resume(id: number) { await resumeTorrent(id); await this.load() },
+    async pause(id: number) { await pauseTorrent(id); await this.load(true) },
+    async resume(id: number) { await resumeTorrent(id); await this.load(true) },
     async remove(id: number, deleteData = false) {
       await removeTorrent(id, deleteData)
       useAppStore().toast(deleteData ? 'Torrent and data removed' : 'Torrent removed', 'info')
-      await this.load()
+      await this.load(true)
     },
     async setPriority(id: number, priority: string) {
       await setTorrentPriority(id, priority)
-      await this.load()
+      await this.load(true)
     },
-    async pauseAll() { await pauseAllTorrents(); await this.load() },
-    async resumeAll() { await resumeAllTorrents(); await this.load() },
+    async pauseAll() { await pauseAllTorrents(); await this.load(true) },
+    async resumeAll() { await resumeAllTorrents(); await this.load(true) },
   },
 })

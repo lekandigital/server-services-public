@@ -126,6 +126,31 @@ def parse_csv_export_rows(content: str) -> list[dict[str, Any]]:
     return rows_out
 
 
+# What the bot can act on: an X handle (1-15 of [A-Za-z0-9_]) or a numeric user id,
+# which it resolves to a handle before opening the profile.
+X_TARGET_RE = re.compile(r"^(?:[A-Za-z0-9_]{1,15}|\d{1,20})$")
+
+
+def is_x_target(username: str | None) -> bool:
+    return bool(X_TARGET_RE.match((username or "").strip()))
+
+
+def looks_like_cookie_jar(content: str) -> bool:
+    """True for a Netscape cookies.txt (what the cookie-export extensions save).
+
+    Every data line is seven tab-separated fields: domain, subdomains, path, secure,
+    expiry, name, value. On 2026-09-18 one was uploaded as a follow list: its lines
+    became "handles", the bot later "unfollowed" them, and one with commas in its
+    value corrupted unfollowed.csv so the bot crashed on every start.
+    """
+    head = content.lstrip("﻿")[:500]
+    if "Netscape HTTP Cookie File" in head or "HTTP Cookie File" in head:
+        return True
+    lines = [l for l in content.splitlines() if l.strip() and not l.startswith("#")]
+    jar_lines = sum(1 for l in lines if l.count("\t") >= 6)
+    return bool(lines) and jar_lines * 2 >= len(lines)
+
+
 def identity_key_set(username: str | None, user_id: str | None = None) -> set[str]:
     """Dedupe keys for a queue row or CSV row (username handle and/or snowflake id)."""
     keys: set[str] = set()
